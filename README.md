@@ -108,7 +108,7 @@ hf auth whoami
 
 Per i modelli ad accesso limitato (gated) accetta prima la licenza sulla pagina del modello.
 
-Architettura di un modello senza scaricarlo (serve per la sezione 10):
+Architettura di un modello senza scaricarlo:
 
 ```bash
 repo=mlx-community/Qwen3-32B-8bit

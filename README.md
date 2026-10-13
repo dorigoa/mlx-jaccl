@@ -78,12 +78,12 @@ Ambiente e pacchetti (su entrambi i Mac, versioni fissate per riproducibilità):
 ```bash
 conda create -y -n mlx python=3.12
 conda activate mlx
-pip install mlx==0.32.3 mlx-lm==0.31.3
+pip install mlx==0.32.3 mlx-lm==0.32
 python -c "import mlx.core as mx, mlx_lm; print(mx.__version__, mlx_lm.__version__)"
 which python
 ```
 
-Atteso: `0.32.3 0.31.3` e percorso `$HOME/miniforge3/envs/mlx/bin/python` uguale sui due Mac (qui `/Volumes/Home/Alvise/...`).
+Atteso: `0.32.3 0.32` (o numeri simili) e percorso `$HOME/miniforge3/envs/mlx/bin/python` uguale sui due Mac (qui `/Volumes/Home/Alvise/...`).
 
 ## 4. Hugging Face CLI (hf): installazione, token, download
 

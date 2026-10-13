@@ -131,10 +131,11 @@ SETUPTOOLS_SCM_PRETEND_VERSION_FOR_MLX_LM=0.32.0+metrics ~/miniforge3/envs/mlx/b
 
 ## 7. Scripts di supporto e avvio
 ```
-git clone git@github.com:dorigoa/mlx-apple-doc.git
-git clone git@github.com:dorigoa/ai-scripts.git
-cd ai-scripts
-./mlx_jaccl-start.sh -hostfile ~/mlx-apple-doc/hosts.json -leak-patch ~/mlx-apple-doc/mlx_leak_shim.py Qwen3.8-27B -8bit -max-tokens 131072
+git clone git@github.com:dorigoa/mlx-jaccl.git # su entrambi i Mac
+cd mlx-jaccl
+# Nel comando seguente usare il path completo ~/mlx-jaccl/hosts.json e ~/mlx-jaccl/mlx_leak_shim.py
+# invece di ./hosts.json e ./mlx_leak_shim.py, perche' i due script devono essere localizzati anche sul Mac remoto
+./mlx_jaccl-start.sh -hostfile ~/mlx-jaccl/hosts.json -leak-patch ~/mlx-jaccl/mlx_leak_shim.py Qwen3.8-27B -max-tokens 131072
 Server start: model=mlx-community/Qwen3.8-27B-8bit, port=8080, thinking=true
 [INFO] Running /Volumes/Home/Alvise/miniforge3/envs/mlx/bin/python /Volumes/Home/Alvise/mlx-apple-doc/mlx_leak_shim.py --model mlx-community/Qwen3.8-27B-8bit --host 0.0.0.0 --port 8080 --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 --max-tokens 131072 --log-level INFO --prompt-cache-bytes 9663676416 --prefill-step-size 256 --chat-template-args '{"enable_thinking": true, "reasoning_effort": "medium"}'
 [leak-shim] rank=0 patch applicata (mlx-lm 0.32.0+metrics)

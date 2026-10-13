@@ -143,7 +143,14 @@ Server start: model=mlx-community/Qwen3.8-27B-8bit, port=8080, thinking=true
 ...
 ...
 ```
-
+Chiedere metriche:
+```
+curl -s http://192.168.1.101:8080/v1/metrics | jq '.last_request'
+```
+funziona solo quando la richiesta e' stata completata. Altrimenti bisogna interrogare continuamente:
+```
+curl -s http://192.168.1.101:8080/v1/metrics | jq '.batch'
+```
 ## 7. Modelli compatibili e budget di memoria
 
 Un modello gira in TP solo se la sua architettura (`model_type`) implementa `shard()` in mlx-lm. Le architetture supportate dalla versione installata si ricavano così:

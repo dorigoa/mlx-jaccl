@@ -17,8 +17,16 @@ expected output:
     token generati rank0=9 rank1=9, collettive stop rank0=2 rank1=2, errori=[None, None]
     OK: entrambi i rank fermi al token 9
     [leak-shim] rank=? patch stop applicata (mlx-lm 0.32.0+metrics, sync ogni 8 token)
+--- fase keepalive-unpatched ---
+    token letti 106/106, keepalive prima della disconnessione 0, BrokenPipe=True, stop=True
+    SILENZIO: disconnessione rilevata solo a generazione finita
+--- fase keepalive-patched ---
+    token letti 15/106, keepalive prima della disconnessione 1, BrokenPipe=True, stop=True
+    OK: disconnessione rilevata 0 token dopo
+    [leak-shim] rank=? patch keepalive applicata (mlx-lm 0.32.0+metrics, dopo 0.05s di silenzio)
 PASS: leak riprodotto senza patch, assente con la patch
 PASS: desync dei rank allo stop riprodotto senza patch, assente con la patch
+PASS: silenzio durante le tool call riprodotto senza patch, assente con la patch
 
 ----------------
 
@@ -47,14 +55,30 @@ Fix: lo stop viene condiviso dal rank 0 a tutti i rank con _share_object ogni
 MLX_STOP_SHIM_EVERY token; tutti i rank escono dallo stesso token, salvano la
 cache e tornano allineati in attesa della richiesta successiva.
 
+----------------
+
+Terza patch (keepalive SSE, mlx-lm 0.32.0): mentre il modello scrive una tool
+call APIHandler.handle_completion non manda nulla al client (il testo della
+tool call parte tutto nel chunk finale). Con tool call lunghe la connessione
+resta muta per minuti, proxy/socat/client la chiudono per inattivita' e il
+server se ne accorge solo alla fine (BrokenPipeError a server.py:1811), dopo
+aver generato per nessuno; intanto il retry del client resta in coda.
+
+Fix: se in streaming non si e' scritto nulla da MLX_KEEPALIVE_SHIM_EVERY
+secondi si manda un commento SSE ": keepalive" (lo stesso formato che il
+server usa gia' durante il prefill). La connessione non e' mai inattiva e una
+disconnessione emerge subito, cosi' la patch stop ferma la generazione.
+
 Uso:
   python mlx_leak_shim.py [argomenti di mlx_lm.server]
   python mlx_leak_shim.py --self-test
 Variabili d'ambiente:
-  MLX_LEAK_SHIM=0         non applica la patch al leak (per confronti A/B)
-  MLX_STOP_SHIM=0         non applica la patch allo stop distribuito
-  MLX_STOP_SHIM_EVERY=n   ogni quanti token si condivide lo stop (default 8)
-  MLX_LEAK_SHIM_STRICT=1  esce con errore se il codice installato non e' quello atteso
+  MLX_LEAK_SHIM=0              non applica la patch al leak (per confronti A/B)
+  MLX_STOP_SHIM=0              non applica la patch allo stop distribuito
+  MLX_STOP_SHIM_EVERY=n        ogni quanti token si condivide lo stop (default 8)
+  MLX_KEEPALIVE_SHIM=0         non applica la patch keepalive
+  MLX_KEEPALIVE_SHIM_EVERY=s   secondi di silenzio prima di un keepalive (default 5)
+  MLX_LEAK_SHIM_STRICT=1       esce con errore se il codice installato non e' quello atteso
 """
 
 import functools
@@ -92,6 +116,41 @@ STOP_NEW = """\
                 elif ctx._should_stop:
                     break
 """
+
+# Blocchi di APIHandler.handle_completion modificati dalla patch keepalive
+KEEPALIVE_BLOCKS = (
+    ("""\
+        try:
+            for gen in response:
+""", """\
+        _ka_last = time.monotonic()  # [keepalive-shim]
+        try:
+            for gen in response:
+"""),
+    ("""\
+                    self.wfile.flush()
+                    reasoning_text = ""
+""", """\
+                    self.wfile.flush()
+                    _ka_last = time.monotonic()  # [keepalive-shim]
+                    reasoning_text = ""
+"""),
+    ("""\
+                if gen.finish_reason is not None:
+                    finish_reason = gen.finish_reason
+""", """\
+                # [keepalive-shim] durante le tool call non si scrive nulla: un
+                # commento SSE dopo {every}s di silenzio tiene viva la
+                # connessione e fa emergere subito la disconnessione del client
+                if self.stream and time.monotonic() - _ka_last >= {every}:
+                    self.wfile.write(b": keepalive\\n\\n")
+                    self.wfile.flush()
+                    _ka_last = time.monotonic()
+
+                if gen.finish_reason is not None:
+                    finish_reason = gen.finish_reason
+"""),
+)
 
 _pending = {}
 _lock = threading.Lock()
@@ -171,6 +230,46 @@ def apply_patch():
     return True
 
 
+def _patch_method(cls, name, blocks, what):
+    """Sostituisce nel sorgente di cls.<name> ogni blocco (old, new), dove ogni
+    old deve comparire una sola volta, e ricompila il metodo nel namespace del
+    suo modulo, cosi' risolve gli stessi nomi (stream_generate, Response, ...)."""
+    import mlx_lm
+
+    version = getattr(mlx_lm, "__version__", "?")
+    method = getattr(cls, name)
+    try:
+        src = inspect.getsource(method)
+    except (OSError, TypeError):
+        src = ""
+    if not src or any(src.count(old) != 1 for old, _ in blocks):
+        return _mismatch(f"mlx-lm {version}: {name} diverso da quello atteso, "
+                         f"patch {what} NON applicata")
+
+    for old, new in blocks:
+        src = src.replace(old, new)
+    module = sys.modules[method.__module__]
+    ns = {}
+    exec(compile(textwrap.dedent(src), f"<{what}-shim {module.__file__}>", "exec"),
+         vars(module), ns)
+    patched = ns[name]
+    patched.__qualname__ = method.__qualname__
+    patched._shim = what
+    setattr(cls, name, patched)
+    return True
+
+
+def _env_number(var, default, cast):
+    value = os.environ.get(var, str(default))
+    try:
+        if cast(value) > 0:
+            return cast(value)
+    except ValueError:
+        pass
+    _log(f"{var}={value!r} non valido, uso {default}")
+    return default
+
+
 def apply_stop_patch():
     if os.environ.get("MLX_STOP_SHIM", "1") == "0":
         _log("MLX_STOP_SHIM=0: patch stop NON applicata")
@@ -180,32 +279,37 @@ def apply_stop_patch():
     from mlx_lm import server
 
     rg = server.ResponseGenerator
-    if getattr(rg._serve_single, "_stop_shim", False):
+    if getattr(rg._serve_single, "_shim", None) == "stop":
         return True
 
     version = getattr(mlx_lm, "__version__", "?")
-    every = os.environ.get("MLX_STOP_SHIM_EVERY", "8")
-    if not every.isdigit() or int(every) < 1:
-        _log(f"MLX_STOP_SHIM_EVERY={every!r} non valido, uso 8")
-        every = "8"
-    try:
-        src = inspect.getsource(rg._serve_single)
-    except (OSError, TypeError):
-        src = ""
-    if src.count(STOP_OLD) != 1 or not callable(getattr(rg, "_share_object", None)):
-        return _mismatch(f"mlx-lm {version}: _serve_single diverso da quello atteso, "
-                         "patch stop NON applicata")
-
-    # Ricompila _serve_single nel namespace di mlx_lm.server con il blocco
-    # sostituito, cosi' risolve gli stessi nomi (stream_generate, Response, ...)
-    src = textwrap.dedent(src.replace(STOP_OLD, STOP_NEW.format(every=int(every))))
-    ns = {}
-    exec(compile(src, f"<stop-shim {server.__file__}>", "exec"), vars(server), ns)
-    serve_single = ns["_serve_single"]
-    serve_single.__qualname__ = rg._serve_single.__qualname__
-    serve_single._stop_shim = True
-    rg._serve_single = serve_single
+    every = _env_number("MLX_STOP_SHIM_EVERY", 8, int)
+    if not callable(getattr(rg, "_share_object", None)):
+        return _mismatch(f"mlx-lm {version}: manca _share_object, patch stop NON applicata")
+    if not _patch_method(rg, "_serve_single", [(STOP_OLD, STOP_NEW.format(every=every))], "stop"):
+        return False
     _log(f"patch stop applicata (mlx-lm {version}, sync ogni {every} token)")
+    return True
+
+
+def apply_keepalive_patch():
+    if os.environ.get("MLX_KEEPALIVE_SHIM", "1") == "0":
+        _log("MLX_KEEPALIVE_SHIM=0: patch keepalive NON applicata")
+        return False
+
+    import mlx_lm
+    from mlx_lm import server
+
+    handler = server.APIHandler
+    if getattr(handler.handle_completion, "_shim", None) == "keepalive":
+        return True
+
+    version = getattr(mlx_lm, "__version__", "?")
+    every = _env_number("MLX_KEEPALIVE_SHIM_EVERY", 5, float)
+    blocks = [(old, new.format(every=every)) for old, new in KEEPALIVE_BLOCKS]
+    if not _patch_method(handler, "handle_completion", blocks, "keepalive"):
+        return False
+    _log(f"patch keepalive applicata (mlx-lm {version}, dopo {every:g}s di silenzio)")
     return True
 
 
@@ -349,9 +453,117 @@ def _stop_phase(patched):
     return 0
 
 
+KA_REASONING = 5      # token di ragionamento (scritti subito al client)
+KA_TOOL_TOKENS = 100  # token della tool call (10 ms l'uno, nessuna scrittura)
+KA_DISCONNECT = 10    # il client se ne va al 10o token della tool call
+
+
+def _keepalive_phase(patched):
+    """Vero APIHandler.handle_completion su un finto handler: il modello scrive
+    una lunga tool call e a meta' il client se ne va. Con la patch la
+    disconnessione deve emergere subito, non a generazione finita."""
+    import time
+    from types import SimpleNamespace as NS
+    from mlx_lm import server
+
+    os.environ["MLX_KEEPALIVE_SHIM_EVERY"] = "0.05"
+    if patched and not apply_keepalive_patch():
+        print("patch non applicabile")
+        return 1
+
+    class FakeTextStateMachine:  # lo stato e' la prima lettera del testo
+        STATES = {"R": "reasoning", "T": "tool", "N": "normal"}
+
+        @staticmethod
+        def step(sm_state, text):
+            return sm_state, text, FakeTextStateMachine.STATES[text[0]]
+
+        @staticmethod
+        def flush(sm_state):
+            return sm_state, "", "normal"
+
+        @staticmethod
+        def discard(sm_state):
+            return sm_state, "normal"
+
+    server.TextStateMachine = FakeTextStateMachine
+    server.ToolCallFormatter = lambda parser, tools, stream: (lambda calls: calls)
+
+    total = KA_REASONING + KA_TOOL_TOKENS + 1
+    pulled = [0]
+    disconnected = [False]
+
+    def generation():
+        seq = ["R"] * KA_REASONING + ["T"] * KA_TOOL_TOKENS + ["N"]
+        for i, text in enumerate(seq):
+            if text == "T":
+                time.sleep(0.01)
+            pulled[0] += 1
+            if pulled[0] == KA_REASONING + KA_DISCONNECT:
+                disconnected[0] = True
+            yield NS(text=text, token=1, logprob=0.0, top_tokens=(),
+                     finish_reason="stop" if i == total - 1 else None)
+
+    class WFile:  # socket verso il client: dopo la disconnessione ogni write fallisce
+        keepalives = 0
+
+        def write(self, data):
+            if disconnected[0]:
+                raise BrokenPipeError(32, "Broken pipe")
+            if data.startswith(b": keepalive"):
+                self.keepalives += 1
+            return len(data)
+
+        def flush(self):
+            pass
+
+    ctx = server.GenerationContext(
+        has_tool_calling=True, has_thinking=True, tool_parser=None,
+        text_sm=NS(make_state=lambda s: s), initial_state="reasoning", prompt=[0])
+
+    class Handler:
+        stream = True
+        stream_options = None
+        logprobs = False
+        top_logprobs = 0
+        wfile = WFile()
+        response_generator = NS(generate=lambda request, args, progress_callback: (ctx, generation()))
+
+        def __getattr__(self, name):  # gli altri parametri della richiesta
+            return None
+
+        def _set_stream_headers(self, code):
+            pass
+
+        def end_headers(self):
+            pass
+
+        def generate_response(self, *args, **kwargs):
+            return {}
+
+    handler = Handler()
+    try:
+        server.APIHandler.handle_completion(handler, NS(tools=None), [])
+        broken = False
+    except BrokenPipeError:
+        broken = True
+
+    print(f"token letti {pulled[0]}/{total}, keepalive prima della disconnessione "
+          f"{handler.wfile.keepalives}, BrokenPipe={broken}, stop={ctx._should_stop}")
+    if not broken or not ctx._should_stop:
+        print("la disconnessione non e' stata rilevata")
+        return 5
+    if pulled[0] == total:
+        print("SILENZIO: disconnessione rilevata solo a generazione finita")
+        return 3
+    print(f"OK: disconnessione rilevata {pulled[0] - KA_REASONING - KA_DISCONNECT} token dopo")
+    return 0
+
+
 def _self_test():
     results = {}
-    for phase in ("unpatched", "patched", "stop-unpatched", "stop-patched"):
+    for phase in ("unpatched", "patched", "stop-unpatched", "stop-patched",
+                  "keepalive-unpatched", "keepalive-patched"):
         print(f"--- fase {phase} ---", flush=True)
         try:
             p = subprocess.run(
@@ -366,7 +578,8 @@ def _self_test():
         results[phase] = p.returncode
 
     rc = 0
-    for name, what in (("", "leak"), ("stop-", "desync dei rank allo stop")):
+    for name, what in (("", "leak"), ("stop-", "desync dei rank allo stop"),
+                       ("keepalive-", "silenzio durante le tool call")):
         unpatched, patched = results.get(name + "unpatched"), results.get(name + "patched")
         if unpatched == 3 and patched == 0:
             print(f"PASS: {what} riprodotto senza patch, assente con la patch")
@@ -379,7 +592,8 @@ def _self_test():
     return rc
 
 
-PHASES = ("patched", "unpatched", "stop-patched", "stop-unpatched")
+PHASES = ("patched", "unpatched", "stop-patched", "stop-unpatched",
+          "keepalive-patched", "keepalive-unpatched")
 
 
 def main():
@@ -392,10 +606,13 @@ def main():
             return 2
         if args[1].startswith("stop-"):
             return _stop_phase(args[1] == "stop-patched")
+        if args[1].startswith("keepalive-"):
+            return _keepalive_phase(args[1] == "keepalive-patched")
         return _phase(args[1] == "patched")
 
     apply_patch()
     apply_stop_patch()
+    apply_keepalive_patch()
     sys.argv = ["mlx_lm.server"] + args
     try:
         from mlx_lm.server import main as server_main

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 readonly MODELS=("Qwen3.8-27B" "GLM-4.7-Flash" "Qwen3.6-35B-A3B", "Llama-3.3-70B-Instruct")
-readonly SCRIPT_DIR=${HOME}/mlx-apple-doc
+readonly SCRIPT_DIR=${HOME}/mlx-jaccl
 readonly PYTHON_BIN="${HOME}/miniforge3/envs/mlx/bin/python"
 
 usage() {
@@ -102,9 +102,10 @@ server_args=(
     --temp "$TEMP" --top-p "$TOPP" --top-k 20 --min-p 0.0
     --max-tokens "$MAX_TOKENS"
     --log-level "$LOG_LEVEL"
-    --prompt-cache-bytes 9663676416
+    --prompt-cache-bytes 4831838208
     --prefill-step-size 256
     --chat-template-args "{\"enable_thinking\": ${THINK_BOOL}, \"reasoning_effort\": \"$REAS_DEPTH\"}"
+    --kv-bits 8
 )
 
 exec mlx.launch --verbose --backend jaccl --hostfile "$HOSTFILE" \

@@ -40,11 +40,19 @@ expected output:
     OK: il client vede e usa solo il modello di avvio
     [leak-shim] rank=? patch modello bloccato applicata (mlx-lm 0.32.0+metrics)
     [leak-shim] rank=? richiesto il modello 'mlx-community/GLM-4.7-Flash-8bit': servito con 'mlx-community/Qwen3.8-27B-4bit'
+--- fase kvbits-unpatched ---
+    CRASH di glm4_moe_lite con --kv-bits: 'list' object has no attribute 'swapaxes'
+--- fase kvbits-patched ---
+    cache dopo la generazione: {'glm4_moe_lite': ['KVCache'], 'llama': ['QuantizedKVCache']}
+    OK: GLM genera a precisione piena, Llama resta quantizzato
+    [leak-shim] rank=? patch kv-bits applicata (mlx-lm 0.32.0+metrics)
+    [leak-shim] rank=? glm4_moe_lite: attenzione MLA, la cache KV resta a precisione piena (--kv-bits ignorato)
 PASS: leak riprodotto senza patch, assente con la patch
 PASS: desync dei rank allo stop riprodotto senza patch, assente con la patch
 PASS: silenzio durante le tool call riprodotto senza patch, assente con la patch
 PASS: sforamento del limite della prompt cache riprodotto senza patch, assente con la patch
 PASS: cambio di modello su richiesta del client riprodotto senza patch, assente con la patch
+PASS: crash dei modelli MLA con --kv-bits riprodotto senza patch, assente con la patch
 
 ----------------
 
@@ -113,6 +121,22 @@ Fix: /v1/models elenca solo il modello passato con --model, e ogni richiesta
 viene servita con quel modello qualunque nome indichi (con un avviso nel log
 la prima volta che arriva un nome diverso).
 
+----------------
+
+Sesta patch (--kv-bits sui modelli MLA, mlx-lm 0.32.0): quando la cache supera
+--quantized-kv-start (default 5000 token) generate_step la converte in
+QuantizedKVCache, il cui update_and_fetch restituisce tuple (pesi, scale, bias).
+L'attenzione di Qwen/Llama passa da scaled_dot_product_attention, che le
+gestisce; i modelli che mettono in cache il latente MLA (glm4_moe_lite =
+GLM-4.7-Flash, deepseek_v3, kimi, ...) lo usano invece come array
+(k_pe.swapaxes) e ogni richiesta oltre i 5000 token muore con
+"AttributeError: 'list' object has no attribute 'swapaxes'".
+
+Fix: per questi modelli generate_step riceve kv_bits=None e la cache resta a
+precisione piena (il latente MLA e' gia' piccolo). --kv-bits resta sulla riga
+di comando, quindi le richieste continuano a passare da _serve_single, dove
+agiscono le patch stop e limite cache. Gli altri modelli restano quantizzati.
+
 Uso:
   python mlx_leak_shim.py [argomenti di mlx_lm.server]
   python mlx_leak_shim.py --self-test
@@ -124,11 +148,13 @@ Variabili d'ambiente:
   MLX_KEEPALIVE_SHIM_EVERY=s   secondi di silenzio prima di un keepalive (default 5)
   MLX_CACHE_SHIM=0             non applica il limite in byte alla prompt cache
   MLX_PIN_SHIM=0               non blocca il modello (torna il comportamento originale)
+  MLX_KVBITS_SHIM=0            quantizza la cache KV anche dei modelli MLA (crash oltre 5000 token)
   MLX_LEAK_SHIM_STRICT=1       esce con errore se il codice installato non e' quello atteso
 """
 
 import functools
 import hashlib
+import importlib
 import inspect
 import os
 import subprocess
@@ -458,6 +484,69 @@ def apply_pin_patch():
     handler.handle_completion = handle_completion
     handler.handle_models_request = handle_models_request
     _log(f"patch modello bloccato applicata (mlx-lm {version})")
+    return True
+
+
+# Attenzione che mette in cache il latente MLA e ne usa il risultato come array
+LATENT_CACHE = "update_and_fetch(kv_latent"
+_latent_models = {}
+
+
+def _caches_latent(model):
+    """True se un modulo del modello mette in cache il latente MLA, che con una
+    QuantizedKVCache tornerebbe come tupla. Calcolato una volta per classe."""
+    cls = type(model)
+    if cls not in _latent_models:
+        found = False
+        for mod_cls in {type(m) for m in model.modules()}:
+            try:
+                found = LATENT_CACHE in inspect.getsource(mod_cls)
+            except (OSError, TypeError):
+                continue
+            if found:
+                break
+        _latent_models[cls] = found
+        if found:
+            name = getattr(model, "model_type", cls.__module__)
+            _log(f"{name}: attenzione MLA, la cache KV resta a precisione piena "
+                 "(--kv-bits ignorato)")
+    return _latent_models[cls]
+
+
+def apply_kvbits_patch():
+    if os.environ.get("MLX_KVBITS_SHIM", "1") == "0":
+        _log("MLX_KVBITS_SHIM=0: patch kv-bits NON applicata")
+        return False
+
+    import mlx_lm
+    generate = importlib.import_module("mlx_lm.generate")  # mlx_lm.generate e' anche una funzione
+
+    if getattr(generate.generate_step, "_shim", None) == "kvbits":
+        return True
+
+    version = getattr(mlx_lm, "__version__", "?")
+    try:
+        params = inspect.signature(generate.generate_step).parameters
+        src = inspect.getsource(generate.stream_generate)
+    except (OSError, TypeError, ValueError):
+        params, src = {}, ""
+    if "kv_bits" not in params or "generate_step(prompt, model" not in src:
+        return _mismatch(f"mlx-lm {version}: generate_step/stream_generate diversi da "
+                         "quelli attesi, patch kv-bits NON applicata")
+
+    orig_step = generate.generate_step
+
+    # stream_generate risolve generate_step nel namespace del modulo a ogni
+    # chiamata: basta sostituirlo li'. kv_bits e' keyword-only.
+    @functools.wraps(orig_step)
+    def generate_step(prompt, model, *args, **kwargs):
+        if kwargs.get("kv_bits") is not None and _caches_latent(model):
+            kwargs["kv_bits"] = None
+        return orig_step(prompt, model, *args, **kwargs)
+
+    generate_step._shim = "kvbits"
+    generate.generate_step = generate_step
+    _log(f"patch kv-bits applicata (mlx-lm {version})")
     return True
 
 
@@ -792,11 +881,60 @@ def _pin_phase(patched):
     return 0
 
 
+KV_PROMPT = 12  # token di prompt del test
+KV_START = 8    # --quantized-kv-start del test (in produzione 5000)
+
+
+def _kvbits_phase(patched):
+    """Veri glm4_moe_lite e llama minuscoli (pesi casuali) con kv_bits=8 e la
+    cache che supera quantized_kv_start: GLM deve generare a precisione piena,
+    Llama deve continuare a quantizzare."""
+    import mlx.core as mx
+    generate = importlib.import_module("mlx_lm.generate")  # mlx_lm.generate e' anche una funzione
+    from mlx_lm.models import glm4_moe_lite, llama
+    from mlx_lm.models.cache import make_prompt_cache
+
+    if patched and not apply_kvbits_patch():
+        print("patch non applicabile")
+        return 1
+
+    models = {
+        "glm4_moe_lite": glm4_moe_lite.Model(glm4_moe_lite.ModelArgs(
+            vocab_size=64, hidden_size=64, intermediate_size=128, moe_intermediate_size=32,
+            num_hidden_layers=2, num_attention_heads=4, num_key_value_heads=4,
+            n_routed_experts=4, num_experts_per_tok=2, kv_lora_rank=64, q_lora_rank=32,
+            qk_rope_head_dim=64, qk_nope_head_dim=32, v_head_dim=32)),
+        "llama": llama.Model(llama.ModelArgs(
+            model_type="llama", vocab_size=64, hidden_size=256, intermediate_size=128,
+            num_hidden_layers=2, num_attention_heads=4, rms_norm_eps=1e-5)),
+    }
+    kinds = {}
+    for name, model in models.items():
+        cache = make_prompt_cache(model)
+        try:
+            for _ in generate.generate_step(
+                    mx.array(list(range(KV_PROMPT))), model, prompt_cache=cache,
+                    max_tokens=8, prefill_step_size=4, kv_bits=8, quantized_kv_start=KV_START):
+                pass
+        except AttributeError as e:
+            print(f"CRASH di {name} con --kv-bits: {e}")
+            return 3
+        kinds[name] = sorted({type(c).__name__ for c in cache})
+
+    print(f"cache dopo la generazione: {kinds}")
+    if kinds != {"glm4_moe_lite": ["KVCache"], "llama": ["QuantizedKVCache"]}:
+        print("cache diverse da quelle attese")
+        return 5
+    print("OK: GLM genera a precisione piena, Llama resta quantizzato")
+    return 0
+
+
 def _self_test():
     results = {}
     for phase in ("unpatched", "patched", "stop-unpatched", "stop-patched",
                   "keepalive-unpatched", "keepalive-patched",
-                  "cache-unpatched", "cache-patched", "pin-unpatched", "pin-patched"):
+                  "cache-unpatched", "cache-patched", "pin-unpatched", "pin-patched",
+                  "kvbits-unpatched", "kvbits-patched"):
         print(f"--- fase {phase} ---", flush=True)
         try:
             p = subprocess.run(
@@ -814,7 +952,8 @@ def _self_test():
     for name, what in (("", "leak"), ("stop-", "desync dei rank allo stop"),
                        ("keepalive-", "silenzio durante le tool call"),
                        ("cache-", "sforamento del limite della prompt cache"),
-                       ("pin-", "cambio di modello su richiesta del client")):
+                       ("pin-", "cambio di modello su richiesta del client"),
+                       ("kvbits-", "crash dei modelli MLA con --kv-bits")):
         unpatched, patched = results.get(name + "unpatched"), results.get(name + "patched")
         if unpatched == 3 and patched == 0:
             print(f"PASS: {what} riprodotto senza patch, assente con la patch")
@@ -829,7 +968,8 @@ def _self_test():
 
 PHASES = ("patched", "unpatched", "stop-patched", "stop-unpatched",
           "keepalive-patched", "keepalive-unpatched",
-          "cache-patched", "cache-unpatched", "pin-patched", "pin-unpatched")
+          "cache-patched", "cache-unpatched", "pin-patched", "pin-unpatched",
+          "kvbits-patched", "kvbits-unpatched")
 
 
 def main():
@@ -848,6 +988,8 @@ def main():
             return _cache_phase(args[1] == "cache-patched")
         if args[1].startswith("pin-"):
             return _pin_phase(args[1] == "pin-patched")
+        if args[1].startswith("kvbits-"):
+            return _kvbits_phase(args[1] == "kvbits-patched")
         return _phase(args[1] == "patched")
 
     # Le patch cambiano le collettive: i rank devono avere lo stesso shim
@@ -858,6 +1000,7 @@ def main():
     apply_keepalive_patch()
     apply_cache_bytes_patch()
     apply_pin_patch()
+    apply_kvbits_patch()
     sys.argv = ["mlx_lm.server"] + args
     try:
         from mlx_lm.server import main as server_main

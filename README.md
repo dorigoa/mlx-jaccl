@@ -151,6 +151,10 @@ funziona solo quando la richiesta e' stata completata. Altrimenti bisogna interr
 ```
 curl -s http://192.168.1.101:8080/v1/metrics | jq '.batch'
 ```
+Monitorare uso memoria:
+```
+watch -n 2 "curl -s http://localhost:8080/v1/metrics | jq '{cache_gb: (.prompt_cache.n_bytes/1e9), limite_gb: (.prompt_cache.max_bytes/1e9), ok: (.prompt_cache.n_bytes <= .prompt_cache.max_bytes), active_gb: (.memory.active/1e9)}'"
+```
 ## 7. Modelli compatibili e budget di memoria
 
 Un modello gira in TP solo se la sua architettura (`model_type`) implementa `shard()` in mlx-lm. Le architetture supportate dalla versione installata si ricavano così:

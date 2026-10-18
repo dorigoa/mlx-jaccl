@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-readonly MODELS=("Qwen3.8-27B" "GLM-4.7-Flash" "Qwen3.6-35B-A3B", "Llama-3.3-70B-Instruct")
+readonly MODELS=("Qwen3.8-27B" "GLM-4.7-Flash" "Qwen3.6-35B-A3B" "Llama-3.3-70B-Instruct")
 readonly SCRIPT_DIR=${HOME}/mlx-jaccl
 readonly PYTHON_BIN="${HOME}/miniforge3/envs/mlx/bin/python"
 

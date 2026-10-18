@@ -17,6 +17,7 @@ Uso: $(basename "$0") <model> [-8bit] [-nothink] [-port <1-65535>] [-max-token <
   -leak-patch <file> Optional: change the patch path for memory leak with qwen models
   -temp              Optional: change temperature to be passed to the llm
   -top-p             Optional: change top-p parameter to be passed to the llm
+  -cache-gbytes <n>  Optional: size in GB of prompt cache bytes
   -debug             Optional: show debug messages
   
   -h         Show this help
@@ -43,6 +44,7 @@ HOSTFILE="${SCRIPT_DIR}/hosts.json"
 SHIM="${SCRIPT_DIR}/mlx_leak_shim.py"
 TEMP="1.0"
 TOPP="0.95"
+PROMPT_CACHE_BYTES=4.5G
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -69,6 +71,10 @@ while [[ $# -gt 0 ]]; do
             TOPP="$2"; shift 2 ;;
         -debug)
             LOG_LEVEL="DEBUG"; shift ;;
+        -cache-gbytes)
+            [[ "${2:-}" =~ ^[0-9]+(\.[0-9]+)?$ ]] || die "-cache-gbytes requires a number of GB (e.g. 2 or 4.5)"
+            PROMPT_CACHE_BYTES="${2}G"; shift 2 ;;
+            #PROMPT_CACHE_BYTES="${2}G"; shift 2 ;;
         -h|--help)
             usage 0 ;;
         -*)
@@ -102,7 +108,7 @@ server_args=(
     --temp "$TEMP" --top-p "$TOPP" --top-k 20 --min-p 0.0
     --max-tokens "$MAX_TOKENS"
     --log-level "$LOG_LEVEL"
-    --prompt-cache-bytes 4831838208
+    --prompt-cache-bytes "$PROMPT_CACHE_BYTES"
     --prefill-step-size 256
     --chat-template-args "{\"enable_thinking\": ${THINK_BOOL}, \"reasoning_effort\": \"$REAS_DEPTH\"}"
     --kv-bits 8

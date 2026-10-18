@@ -1,15 +1,4 @@
 #!/usr/bin/env python3
-"""Avvia mlx_lm.server sul cluster jaccl con mlx.launch, tramite mlx_leak_shim.py.
-
-Versione Python di mlx_jaccl-start.sh: stesse opzioni, stesso comando finale.
-Non serve attivare conda: mlx.launch viene lanciato per percorso assoluto
-dall'ambiente 'mlx' (che non ha script di attivazione).
-
-Esempi:
-  ./mlx_jaccl-start.py Qwen3.8-27B
-  ./mlx_jaccl-start.py Qwen3.8-27B -8bit -cache-gbytes 2
-  ./mlx_jaccl-start.py GLM-4.7-Flash -dry-run
-"""
 
 import argparse
 import json
@@ -65,6 +54,8 @@ def parse_args(argv):
                         help="high reasoning effort (default: medium)")
     parser.add_argument("-port", type=port, default=8080,
                         help="listening port of the API server (default: %(default)s)")
+    parser.add_argument("-host", type=str, default="127.0.0.1",
+                        help="listening on specified host of the API server (default: 127.0.0.1)")
     parser.add_argument("-max-tokens", type=int, default=262144,
                         help="max number of tokens generated per request (default: %(default)s)")
     parser.add_argument("-hostfile", default=str(SCRIPT_DIR / "hosts.json"),
@@ -99,7 +90,7 @@ def build_command(args):
     server_args = [
         args.leak_patch,
         "--model", model_id(args),
-        "--host", "0.0.0.0", "--port", str(args.port),
+        "--host", str(args.host), "--port", str(args.port),
         "--temp", args.temp, "--top-p", args.top_p, "--top-k", "20", "--min-p", "0.0",
         "--max-tokens", str(args.max_tokens),
         "--log-level", "DEBUG" if args.debug else "INFO",

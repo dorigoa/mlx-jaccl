@@ -44,7 +44,7 @@ HOSTFILE="${SCRIPT_DIR}/hosts.json"
 SHIM="${SCRIPT_DIR}/mlx_leak_shim.py"
 TEMP="1.0"
 TOPP="0.95"
-PROMPT_CACHE_BYTES=4.5G
+PROMPT_CACHE_BYTES=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -90,6 +90,15 @@ done
 [[ -f "$HOSTFILE" ]]   || die "hostfile not found: $HOSTFILE"
 [[ -x "$PYTHON_BIN" ]] || die "Python interpreter not found: $PYTHON_BIN"
 [[ -f "$SHIM" ]] || { echo "ERROR: $SHIM not found" >&2; exit 1; }
+
+if [[ -z "$PROMPT_CACHE_BYTES" ]]; then
+    # Qwen3.x sono ibridi: con --kv-bits la prompt cache non fa mai hit
+    if [[ "$MNAME" == Qwen* ]]; then
+        PROMPT_CACHE_BYTES=0G
+    else
+        PROMPT_CACHE_BYTES=4.5G
+    fi
+fi
 
 MODEL="mlx-community/${MNAME}-${BIT_DEPTH}"
 (( THINK_MODE )) && THINK_BOOL=true || THINK_BOOL=false

@@ -9,28 +9,28 @@ expected output:
     CRASH allo step 10395: [metal::malloc] Resource limit (499000) exceeded.
 --- fase patched ---
     OK: 12000 step x 48 layer, valori corretti
-    [leak-shim] rank=? patch applicata (mlx-lm 0.32.2+metrics.gfe5f988)
+    [leak-shim] rank=? patch applicata (mlx-lm 0.32.2)
 --- fase stop-unpatched ---
     token generati rank0=5 rank1=200, collettive stop rank0=0 rank1=0, errori=['NotImplementedError', None]
     DESYNC: i rank escono da punti diversi
 --- fase stop-patched ---
     token generati rank0=9 rank1=9, collettive stop rank0=2 rank1=2, errori=[None, None]
     OK: entrambi i rank fermi al token 9
-    [leak-shim] rank=? patch stop applicata (mlx-lm 0.32.2+metrics.gfe5f988, sync ogni 8 token)
+    [leak-shim] rank=? patch stop applicata (mlx-lm 0.32.2, sync ogni 8 token)
 --- fase keepalive-unpatched ---
     token letti 106/106, keepalive prima della disconnessione 0, BrokenPipe=True, stop=True
     SILENZIO: disconnessione rilevata solo a generazione finita
 --- fase keepalive-patched ---
     token letti 15/106, keepalive prima della disconnessione 1, BrokenPipe=True, stop=True
     OK: disconnessione rilevata 0 token dopo
-    [leak-shim] rank=? patch keepalive applicata (mlx-lm 0.32.2+metrics.gfe5f988, dopo 0.05s di silenzio)
+    [leak-shim] rank=? patch keepalive applicata (mlx-lm 0.32.2, dopo 0.05s di silenzio)
 --- fase cache-unpatched ---
     prompt cache: 10 sequenze, 10.73 GB (limite 4.83 GB)
     SFORA: il limite in byte non viene applicato
 --- fase cache-patched ---
     prompt cache: 4 sequenze, 4.29 GB (limite 4.83 GB)
     OK: limite rispettato
-    [leak-shim] rank=? patch limite cache applicata (mlx-lm 0.32.2+metrics.gfe5f988)
+    [leak-shim] rank=? patch limite cache applicata (mlx-lm 0.32.2)
     [leak-shim] rank=? prompt cache limitata a 4.83 GB
 --- fase pin-unpatched ---
     /v1/models: ['mlx-community/GLM-4.7-Flash-8bit', 'mlx-community/Qwen3.8-27B-4bit', 'mlx-community/Qwen3.8-27B-8bit']; richiesta per mlx-community/GLM-4.7-Flash-8bit servita con mlx-community/GLM-4.7-Flash-8bit
@@ -38,21 +38,30 @@ expected output:
 --- fase pin-patched ---
     /v1/models: ['mlx-community/Qwen3.8-27B-4bit']; richiesta per mlx-community/GLM-4.7-Flash-8bit servita con mlx-community/Qwen3.8-27B-4bit
     OK: il client vede e usa solo il modello di avvio
-    [leak-shim] rank=? patch modello bloccato applicata (mlx-lm 0.32.2+metrics.gfe5f988)
+    [leak-shim] rank=? patch modello bloccato applicata (mlx-lm 0.32.2)
     [leak-shim] rank=? richiesto il modello 'mlx-community/GLM-4.7-Flash-8bit': servito con 'mlx-community/Qwen3.8-27B-4bit'
 --- fase kvbits-unpatched ---
     CRASH di glm4_moe_lite con --kv-bits: 'list' object has no attribute 'swapaxes'
 --- fase kvbits-patched ---
     cache dopo la generazione: {'glm4_moe_lite': ['KVCache'], 'llama': ['QuantizedKVCache']}
     OK: GLM genera a precisione piena, Llama resta quantizzato
-    [leak-shim] rank=? patch kv-bits applicata (mlx-lm 0.32.2+metrics.gfe5f988)
+    [leak-shim] rank=? patch kv-bits applicata (mlx-lm 0.32.2)
     [leak-shim] rank=? glm4_moe_lite: attenzione MLA, la cache KV resta a precisione piena (--kv-bits ignorato)
+--- fase metrics-unpatched ---
+    GET /v1/metrics: HTTP 404
+    NESSUNA METRICA: mlx-lm non ha /v1/metrics
+--- fase metrics-patched ---
+    GET /v1/metrics: requests={'received': 3, 'completed': 1, 'cancelled': 1, 'failed': 1, 'queued': 0, 'active': 0}
+    ultima richiesta: prompt=12 cached=4 prefill=8 token=2 fine=cancelled
+    OK: metriche corrette
+    [metrics-plugin] rank=? /v1/metrics attivo (mlx-lm 0.32.2)
 PASS: leak riprodotto senza patch, assente con la patch
 PASS: desync dei rank allo stop riprodotto senza patch, assente con la patch
 PASS: silenzio durante le tool call riprodotto senza patch, assente con la patch
 PASS: sforamento del limite della prompt cache riprodotto senza patch, assente con la patch
 PASS: cambio di modello su richiesta del client riprodotto senza patch, assente con la patch
 PASS: crash dei modelli MLA con --kv-bits riprodotto senza patch, assente con la patch
+PASS: assenza di /v1/metrics riprodotto senza patch, assente con la patch
 
 ----------------
 
@@ -94,6 +103,9 @@ Fix: se in streaming non si e' scritto nulla da MLX_KEEPALIVE_SHIM_EVERY
 secondi si manda un commento SSE ": keepalive" (lo stesso formato che il
 server usa gia' durante il prefill). La connessione non e' mai inattiva e una
 disconnessione emerge subito, cosi' la patch stop ferma la generazione.
+Non si modifica il sorgente: durante handle_completion il wfile dell'handler
+ricorda l'ultima scrittura e l'iteratore di response_generator.generate()
+manda il keepalive fra un token e l'altro.
 
 ----------------
 
@@ -137,6 +149,12 @@ precisione piena (il latente MLA e' gia' piccolo). --kv-bits resta sulla riga
 di comando, quindi le richieste continuano a passare da _serve_single, dove
 agiscono le patch stop e limite cache. Gli altri modelli restano quantizzati.
 
+----------------
+
+Metriche: GET /v1/metrics viene da mlx_metrics_plugin.py (stessa cartella),
+che avvolge ResponseGenerator.generate e APIHandler.do_GET senza modificare il
+sorgente. Se il file manca o mlx-lm e' diverso, il server parte senza metriche.
+
 Uso:
   python mlx_leak_shim.py [argomenti di mlx_lm.server]
   python mlx_leak_shim.py --self-test
@@ -149,6 +167,7 @@ Variabili d'ambiente:
   MLX_CACHE_SHIM=0             non applica il limite in byte alla prompt cache
   MLX_PIN_SHIM=0               non blocca il modello (torna il comportamento originale)
   MLX_KVBITS_SHIM=0            quantizza la cache KV anche dei modelli MLA (crash oltre 5000 token)
+  MLX_METRICS_PLUGIN=0         non attiva GET /v1/metrics
   MLX_LEAK_SHIM_STRICT=1       esce con errore se il codice installato non e' quello atteso
 """
 
@@ -161,6 +180,7 @@ import subprocess
 import sys
 import textwrap
 import threading
+import time
 
 TAG = "[leak-shim]"
 EXPECTED = ("self.lengths -= N", "self.left_padding -= N")
@@ -190,40 +210,47 @@ STOP_NEW = """\
                     break
 """
 
-# Blocchi di APIHandler.handle_completion modificati dalla patch keepalive
-KEEPALIVE_BLOCKS = (
-    ("""\
-        try:
-            for gen in response:
-""", """\
-        _ka_last = time.monotonic()  # [keepalive-shim]
-        try:
-            for gen in response:
-"""),
-    ("""\
-                        self.wfile.flush()
-                    pending = TextStateMachine.Delta()
-""", """\
-                        self.wfile.flush()
-                        _ka_last = time.monotonic()  # [keepalive-shim]
-                    pending = TextStateMachine.Delta()
-"""),
-    ("""\
-                if gen.finish_reason is not None:
-                    finish_reason = gen.finish_reason
-""", """\
-                # [keepalive-shim] durante le tool call non si scrive nulla: un
-                # commento SSE dopo {every}s di silenzio tiene viva la
-                # connessione e fa emergere subito la disconnessione del client
-                if self.stream and time.monotonic() - _ka_last >= {every}:
-                    self.wfile.write(b": keepalive\\n\\n")
-                    self.wfile.flush()
-                    _ka_last = time.monotonic()
+class _KeepaliveWFile:
+    """wfile dell'handler che ricorda l'ultima scrittura."""
 
-                if gen.finish_reason is not None:
-                    finish_reason = gen.finish_reason
-"""),
-)
+    def __init__(self, wfile):
+        self._wfile = wfile
+        self.last_write = time.monotonic()
+
+    def write(self, data):
+        n = self._wfile.write(data)
+        self.last_write = time.monotonic()
+        return n
+
+    def __getattr__(self, name):
+        return getattr(self._wfile, name)
+
+
+class _KeepaliveGenerator:
+    """response_generator dell'handler: generate() restituisce un iteratore
+    che fra un token e l'altro manda ": keepalive" dopo `every` s di silenzio."""
+
+    def __init__(self, response_generator, handler, wfile, every):
+        self._rg, self._handler, self._wfile, self._every = \
+            response_generator, handler, wfile, every
+
+    def generate(self, *args, **kwargs):
+        ctx, responses = self._rg.generate(*args, **kwargs)
+        return ctx, self._keepalive(responses)
+
+    def _keepalive(self, responses):
+        for response in responses:
+            # Durante le tool call non si scrive nulla: il commento SSE tiene
+            # viva la connessione e fa emergere subito una disconnessione.
+            if self._handler.stream and \
+                    time.monotonic() - self._wfile.last_write >= self._every:
+                self._wfile.write(b": keepalive\n\n")
+                self._wfile.flush()
+            yield response
+
+    def __getattr__(self, name):
+        return getattr(self._rg, name)
+
 
 _pending = {}
 _lock = threading.Lock()
@@ -379,9 +406,30 @@ def apply_keepalive_patch():
 
     version = getattr(mlx_lm, "__version__", "?")
     every = _env_number("MLX_KEEPALIVE_SHIM_EVERY", 5, float)
-    blocks = [(old, new.format(every=every)) for old, new in KEEPALIVE_BLOCKS]
-    if not _patch_method(handler, "handle_completion", blocks, "keepalive"):
-        return False
+    try:
+        src = inspect.getsource(handler.handle_completion)
+    except (OSError, TypeError):
+        src = ""
+    if "self.response_generator.generate(" not in src or "self.wfile.write(" not in src:
+        return _mismatch(f"mlx-lm {version}: handle_completion diverso da quello atteso, "
+                         "patch keepalive NON applicata")
+
+    orig_completion = handler.handle_completion
+
+    # wfile e response_generator sono dell'istanza (una per richiesta): li si
+    # sostituisce solo durante la chiamata.
+    @functools.wraps(orig_completion)
+    def handle_completion(self, *args, **kwargs):
+        wfile, rg = self.wfile, self.response_generator
+        self.wfile = _KeepaliveWFile(wfile)
+        self.response_generator = _KeepaliveGenerator(rg, self, self.wfile, every)
+        try:
+            return orig_completion(self, *args, **kwargs)
+        finally:
+            self.wfile, self.response_generator = wfile, rg
+
+    handle_completion._shim = "keepalive"
+    handler.handle_completion = handle_completion
     _log(f"patch keepalive applicata (mlx-lm {version}, dopo {every:g}s di silenzio)")
     return True
 
@@ -425,6 +473,15 @@ def apply_cache_bytes_patch():
     rg.__init__ = __init__
     _log(f"patch limite cache applicata (mlx-lm {version})")
     return True
+
+
+def apply_metrics_plugin():
+    try:
+        import mlx_metrics_plugin
+    except ImportError:
+        _log("mlx_metrics_plugin.py assente: /v1/metrics NON attivo")
+        return False
+    return mlx_metrics_plugin.install()
 
 
 def apply_pin_patch():
@@ -645,8 +702,11 @@ def _stop_phase(patched):
             super().put(item, *args, **kwargs)
 
     def rank_self(rank):
+        # tok serve a TextStateMachine.from_tokenizer (mlx-lm > 0.32.2),
+        # _make_state_machine a mlx-lm <= 0.32.2
         tok = NS(has_thinking=False, has_tool_calling=False, tool_parser=None,
                  structural_markers=(), response_transitions={})
+        stop_sequences = NS(matcher=lambda: NS(advance=lambda t: False))
         metric = NS(prefill=lambda *a: None, token=lambda: None, finish_reason=None)
         return NS(
             _is_distributed=True,
@@ -654,6 +714,7 @@ def _stop_phase(patched):
             model_provider=NS(model=None, tokenizer=tok, draft_model=None,
                               model_key=("fake",)),
             _tokenize=lambda t, r, a: (list(range(10)), None, None, "normal", None),
+            _make_state_machine=lambda *a: (stop_sequences, None),
             _log_cache_stats=lambda: None,
             prompt_cache=NS(fetch_nearest_cache=lambda k, p: (None, p),
                             insert_cache=lambda *a, **k: None),
@@ -711,7 +772,7 @@ def _keepalive_phase(patched):
     text_sm = server.TextStateMachine({
         "reasoning": [("</think>", "normal"), ("<tool_call>", "tool")],
         "normal": [("<tool_call>", "tool")],
-        "tool": [("</tool_call>", None)],
+        "tool": [("</tool_call>", "normal")],
     })
 
     total = KA_REASONING + KA_TOOL_TOKENS + 1
@@ -919,12 +980,22 @@ def _kvbits_phase(patched):
     return 0
 
 
+def _metrics_phase(patched):
+    try:
+        import mlx_metrics_plugin
+    except ImportError:
+        print("mlx_metrics_plugin.py assente")
+        return 1
+    return mlx_metrics_plugin.self_test_phase(patched)
+
+
 def _self_test():
     results = {}
     for phase in ("unpatched", "patched", "stop-unpatched", "stop-patched",
                   "keepalive-unpatched", "keepalive-patched",
                   "cache-unpatched", "cache-patched", "pin-unpatched", "pin-patched",
-                  "kvbits-unpatched", "kvbits-patched"):
+                  "kvbits-unpatched", "kvbits-patched",
+                  "metrics-unpatched", "metrics-patched"):
         print(f"--- fase {phase} ---", flush=True)
         try:
             p = subprocess.run(
@@ -943,7 +1014,8 @@ def _self_test():
                        ("keepalive-", "silenzio durante le tool call"),
                        ("cache-", "sforamento del limite della prompt cache"),
                        ("pin-", "cambio di modello su richiesta del client"),
-                       ("kvbits-", "crash dei modelli MLA con --kv-bits")):
+                       ("kvbits-", "crash dei modelli MLA con --kv-bits"),
+                       ("metrics-", "assenza di /v1/metrics")):
         unpatched, patched = results.get(name + "unpatched"), results.get(name + "patched")
         if unpatched == 3 and patched == 0:
             print(f"PASS: {what} riprodotto senza patch, assente con la patch")
@@ -959,7 +1031,7 @@ def _self_test():
 PHASES = ("patched", "unpatched", "stop-patched", "stop-unpatched",
           "keepalive-patched", "keepalive-unpatched",
           "cache-patched", "cache-unpatched", "pin-patched", "pin-unpatched",
-          "kvbits-patched", "kvbits-unpatched")
+          "kvbits-patched", "kvbits-unpatched", "metrics-patched", "metrics-unpatched")
 
 
 def main():
@@ -980,6 +1052,8 @@ def main():
             return _pin_phase(args[1] == "pin-patched")
         if args[1].startswith("kvbits-"):
             return _kvbits_phase(args[1] == "kvbits-patched")
+        if args[1].startswith("metrics-"):
+            return _metrics_phase(args[1] == "metrics-patched")
         return _phase(args[1] == "patched")
 
     # Le patch cambiano le collettive: i rank devono avere lo stesso shim
@@ -991,6 +1065,7 @@ def main():
     apply_cache_bytes_patch()
     apply_pin_patch()
     apply_kvbits_patch()
+    apply_metrics_plugin()
     sys.argv = ["mlx_lm.server"] + args
     try:
         from mlx_lm.server import main as server_main

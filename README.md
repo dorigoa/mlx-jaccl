@@ -7,6 +7,17 @@ Reference doc: https://ml-explore.github.io/mlx/build/html/usage/distributed.htm
 
 Verified setup: 2× Mac Studio M4 Max 36 GB over Thunderbolt 5, mlx 0.32.4 + mlx-lm 0.32.2, JACCL (RDMA) backend, tensor parallelism across 2 nodes. Qwen3.6-27B-8bit generates 22.4 tok/s.
 
+# Table of contents
+1. [Prerequisites and enabling RDMA](#1-prerequisites-and-enabling-rdma)
+2. [Thunderbolt network: IP, MTU 9000, bridge](#2-thunderbolt-network-ip-mtu-9000-bridge)
+3. [Python: Miniforge and the mlx environment](#3-python-miniforge-and-the-mlx-environment)
+4. [Hugging Face CLI (hf): installation, token, download](#4-hugging-face-cli-hf-installation-token-download)
+5. [Passwordless SSH](#5-passwordless-ssh)
+6. [Helper scripts and launch](#6-helper-scripts-and-launch)
+7. [Compatible models and memory budget](#7-compatible-models-and-memory-budget)
+8. [Tuning and troubleshooting](#8-tuning-and-troubleshooting)
+9. [Glossary and references](#9-glossary-and-references)
+
 ## 1. Prerequisites and enabling RDMA
 
 Both Macs need macOS 26.2 or later, and a direct certified Thunderbolt 5 cable (80 Gbps) between the two.
@@ -110,18 +121,18 @@ For gated (access-restricted) models, accept the license on the model page first
 
 Assumed to be already set up.
 
-## 6. Applying the metrics patch (on both Macs)
-```
-SETUPTOOLS_SCM_PRETEND_VERSION_FOR_MLX_LM=0.32.0+metrics ~/miniforge3/envs/mlx/bin/python -m pip install --no-deps --force-reinstall "git+https://github.com/dorigoa/mlx-lm.git@metrics"
-```
-
-## 7. Helper scripts and launch
+## 6. Helper scripts and launch
 ```
 git clone git@github.com:dorigoa/mlx-jaccl.git # on both Macs
 cd mlx-jaccl
 
+# Execute a self test, especially after an update of mlx and mlx-lm packages (step 3)
+conda activate mlx # if not already done
+python mlx_leak_shim.py --self-test
+
 # In the following command use the full paths ~/mlx-jaccl/hosts.json and ~/mlx-jaccl/mlx_leak_shim.py
 # instead of ./hosts.json and ./mlx_leak_shim.py, because the two scripts must also be located on the remote Mac
+
 ./mlx_jaccl-start.sh -hostfile ~/mlx-jaccl/hosts.json -leak-patch ~/mlx-jaccl/mlx_leak_shim.py Qwen3.8-27B -max-tokens 131072
 Server start: model=mlx-community/Qwen3.8-27B-8bit, port=8080, thinking=true
 [INFO] Running /Volumes/Home/Alvise/miniforge3/envs/mlx/bin/python /Volumes/Home/Alvise/mlx-apple-doc/mlx_leak_shim.py --model mlx-community/Qwen3.8-27B-8bit --host 0.0.0.0 --port 8080 --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 --max-tokens 131072 --log-level INFO --prompt-cache-bytes 9663676416 --prefill-step-size 256 --chat-template-args '{"enable_thinking": true, "reasoning_effort": "medium"}'
@@ -142,7 +153,7 @@ Monitoring memory usage:
 ```
 watch -n 2 "curl -s http://localhost:8080/v1/metrics | jq '{cache_gb: (.prompt_cache.n_bytes/1e9), limite_gb: (.prompt_cache.max_bytes/1e9), ok: (.prompt_cache.n_bytes <= .prompt_cache.max_bytes), active_gb: (.memory.active/1e9)}'"
 ```
-## 8. Compatible models and memory budget
+## 7. Compatible models and memory budget
 
 A model runs in TP only if its architecture (`model_type`) implements `shard()` in mlx-lm. The architectures supported by the installed version can be listed as follows:
 
@@ -179,7 +190,7 @@ Dense models benefit more from TP than MoE models with few active parameters.
 
 Gemma: no Gemma architecture implements `shard()` in mlx-lm 0.31.3. Alternatives: update mlx-lm and re-run the `grep`; use a single Mac (Gemma 3 27B at 4 bit is about 15 GB, Gemma 4 31B at 4 bit is about 17 GB); or a `shard()` patch on the Llama model. Some Gemma 4 conversions (`gemma4_unified`) don't load even on a single node with mlx-lm 0.31.3.
 
-## 9. Tuning and troubleshooting
+## 8. Tuning and troubleshooting
 
 More GPU memory, on both Macs (does not persist across reboots; 30000 MB leaves about 6 GB for macOS, a conservative estimate):
 
@@ -206,7 +217,7 @@ pkill -f tp_generate.py; ssh 192.168.20.2 'pkill -f tp_generate.py'
 | HF: "Invalid username or password" | Repo non-existent or gated | `curl` with token (section 4), check the name |
 | Out of memory | Weights + KV cache beyond the limit | `iogpu.wired_limit_mb`, `--kv-bits 8`, `--max-kv-size` |
 
-## 10. Glossary and references
+## 9. Glossary and references
 
 | Abbrev. | Meaning |
 | --- | --- |

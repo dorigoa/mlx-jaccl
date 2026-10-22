@@ -83,7 +83,7 @@ python -c "import mlx.core as mx, mlx_lm; print(mx.__version__, mlx_lm.__version
 which python
 ```
 
-Atteso: `0.32.3 0.32` (o numeri simili) e percorso `$HOME/miniforge3/envs/mlx/bin/python` uguale sui due Mac (qui `/Volumes/Home/Alvise/...`).
+Atteso: `0.32.4 0.32.2` (o numeri simili) e percorso `$HOME/miniforge3/envs/mlx/bin/python` uguale sui due Mac (qui `/Volumes/Home/Alvise/...`).
 
 ## 4. Hugging Face CLI (hf): installazione, token, download
 

@@ -1,24 +1,24 @@
-# MLX distribuito con RDMA su Thunderbolt 5 — 2× Mac Studio
-## + Patch per metriche
+# Distributed MLX over RDMA on Thunderbolt 5 — 2× Mac Studio
+## + Patch for metrics
 
-Ott 13, 2026 · @Alvise Dorigo
+Oct 22, 2026 · @Alvise Dorigo
 
-Doc di riferimento: https://ml-explore.github.io/mlx/build/html/usage/distributed.html
+Reference doc: https://ml-explore.github.io/mlx/build/html/usage/distributed.html
 
-Configurazione verificata: 2× Mac Studio M4 Max 36 GB in Thunderbolt 5, mlx 0.32.2 + mlx-lm 0.31.3, backend JACCL (RDMA), tensor parallel su 2 nodi. Qwen3.6-27B-8bit genera 22,4 tok/s.
+Verified setup: 2× Mac Studio M4 Max 36 GB over Thunderbolt 5, mlx 0.32.4 + mlx-lm 0.32.2, JACCL (RDMA) backend, tensor parallelism across 2 nodes. Qwen3.6-27B-8bit generates 22.4 tok/s.
 
-## 1. Prerequisiti e abilitazione RDMA
+## 1. Prerequisites and enabling RDMA
 
-Servono macOS 26.2 o successivo su entrambi i Mac e un cavo Thunderbolt 5 diretto tra i due.
+Both Macs need macOS 26.2 or later, and a direct certified Thunderbolt 5 cable (80 Gbps) between the two.
 
-Abilitazione RDMA, una volta per Mac:
+Enabling RDMA, on both Mac:
 
-1. Avvio in recoveryOS: Mac spento, tieni premuto il tasto di accensione fino a "Opzioni".
-2. Menu Utility → Terminale.
-3. Esegui `rdma_ctl enable`.
-4. Riavvia normalmente.
+1. Boot into recoveryOS: with the Mac off, hold the power button down until "Options" appears.
+2. Menu Utility → Terminal.
+3. Run `rdma_ctl enable`.
+4. Reboot normally.
 
-Verifica (su entrambi i Mac):
+Verification, on both Macs:
 
 ```bash
 sw_vers -productVersion
@@ -26,24 +26,24 @@ rdma_ctl status
 ibv_devinfo | grep -E 'hca_id|state'
 ```
 
-Atteso: versione ≥ 26.2, `enabled`, device `rdma_en3` (Mac1) / `rdma_en4` (Mac2) in stato `PORT_ACTIVE`.
+Expected: version ≥ 26.2, `enabled`, device `rdma_en3` (Mac1) / `rdma_en4` (Mac2) in state `PORT_ACTIVE` (`rdma_en3` and `rdma_en4` are for my specific setup).
 
-## 2. Rete Thunderbolt: IP, MTU 9000, bridge
+## 2. Thunderbolt network: IP, MTU 9000, bridge
 
-Mac1 è il rank 0: da qui si lanciano tutti i job.
+Mac1 is rank 0: all jobs are launched from it.
 
-| Nodo | Interfaccia | IP | Device RDMA |
+| Node | Interface | IP | RDMA device |
 | --- | --- | --- | --- |
 | Mac1 (rank 0) | en3 | 192.168.20.1/24 | rdma\_en3 |
 | Mac2 (rank 1) | en4 | 192.168.20.2/24 | rdma\_en4 |
 
-Disattiva il Bridge Thunderbolt (consigliato dalla documentazione MLX anche se RDMA non usa TCP/IP), su entrambi i Mac:
+Disable the Thunderbolt Bridge (recommended by the MLX documentation even though RDMA doesn't use TCP/IP), on both Macs:
 
 ```bash
 sudo networksetup -setnetworkserviceenabled "Thunderbolt Bridge" off
 ```
 
-IP e MTU (non persistenti; per renderli permanenti usa Impostazioni di Sistema → Rete sul servizio di en3/en4, mappatura con `networksetup -listallhardwareports`):
+IP and MTU (not persistent; to make them permanent use System Settings → Network on the en3/en4 service, hardware mapping via `networksetup -listallhardwareports`):
 
 ```bash
 # Mac1
@@ -52,19 +52,17 @@ sudo ifconfig en3 inet 192.168.20.1 netmask 255.255.255.0 mtu 9000
 sudo ifconfig en4 inet 192.168.20.2 netmask 255.255.255.0 mtu 9000
 ```
 
-Verifica jumbo frame da Mac1 (8972 = 9000 − 28 byte di header IP+ICMP, `-D` vieta la frammentazione):
+Verify jumbo frames from Mac1 (8972 = 9000 − 28 bytes of IP+ICMP headers, `-D` forbids fragmentation):
 
 ```bash
 ping -c3 -D -s 7168 192.168.20.2
 ```
 
-Alternativa automatica: `mlx.distributed_config --backend jaccl --hosts <h1>,<h2> --over thunderbolt --auto-setup --output hosts.json` configura rete e hostfile, ma richiede sudo senza password e usa l'IP di en0 per il rank 0.
+## 3. Python: Miniforge and the mlx environment
 
-## 3. Python: Miniforge e ambiente mlx
+The environment must be identical and at the same path on both Macs: `mlx.launch` starts the same Python executable over SSH on both.
 
-L'ambiente deve essere identico e nello stesso percorso sui due Mac: `mlx.launch` avvia via SSH lo stesso eseguibile Python su entrambi.
-
-Installazione Miniforge (su entrambi i Mac, se assente):
+Installing Miniforge (on both Macs, if not present):
 
 ```bash
 curl -fsSLO "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-$(uname)-$(uname -m).sh"
@@ -73,23 +71,23 @@ bash "Miniforge3-$(uname)-$(uname -m).sh" -b -p "$HOME/miniforge3"
 exec "$SHELL" -l
 ```
 
-Ambiente e pacchetti (su entrambi i Mac, versioni fissate per riproducibilità):
+Environment and packages (on both Macs, versions pinned for reproducibility):
 
 ```bash
 conda create -y -n mlx python=3.12
 conda activate mlx
-pip install mlx==0.32.3 mlx-lm==0.32
+pip install mlx==0.32.4 mlx-lm==0.32.2
 python -c "import mlx.core as mx, mlx_lm; print(mx.__version__, mlx_lm.__version__)"
 which python
 ```
 
-Atteso: `0.32.3 0.32` (o numeri simili) e percorso `$HOME/miniforge3/envs/mlx/bin/python` uguale sui due Mac (qui `/Volumes/Home/Alvise/...`).
+Expected: `0.32.4 0.32.2` (or similar numbers) and the path `$HOME/miniforge3/envs/mlx/bin/python` identical on both Macs (here `/Volumes/Home/Alvise/...`).
 
-## 4. Hugging Face CLI (hf): installazione, token, download
+## 4. Hugging Face CLI (hf): installation, token, download
 
-Il comando `hf` fa parte del pacchetto `huggingface_hub`, già installato come dipendenza di mlx-lm.
+The `hf` command is part of the `huggingface_hub` package, already installed as a dependency of mlx-lm.
 
-Aggiornamento e verifica (su entrambi i Mac, env `mlx` attivo):
+Update and verify (on both Macs, `mlx` env active):
 
 ```bash
 pip install -U huggingface_hub
@@ -97,178 +95,136 @@ which hf
 python -c "import huggingface_hub; print(huggingface_hub.__version__)"
 ```
 
-Token: huggingface.co → Settings → Access Tokens → New token, tipo **Read**. Esportalo come `HF_TOKEN` nella shell.
+Token: huggingface.co → Settings → Access Tokens → New token, type **Read**. Export it as `HF_TOKEN` in the shell.
 
-Login (su entrambi i Mac). Il token viene salvato in `~/.cache/huggingface/token` e resta valido anche nelle sessioni SSH non interattive, dove `HF_TOKEN` potrebbe non essere definito:
+Login (on both Macs). The token is saved to `~/.cache/huggingface/token` and stays valid in non-interactive SSH sessions too, where `HF_TOKEN` may not be defined:
 
 ```bash
 hf auth login --token "$HF_TOKEN"
 hf auth whoami
 ```
 
-Per i modelli ad accesso limitato (gated) accetta prima la licenza sulla pagina del modello.
+For gated (access-restricted) models, accept the license on the model page first.
 
-Architettura di un modello senza scaricarlo:
+## 5. Passwordless SSH
 
-```bash
-repo=mlx-community/Qwen3-32B-8bit
-curl -sSfL -H "Authorization: Bearer $HF_TOKEN" \
-  "https://huggingface.co/$repo/resolve/main/config.json" | grep -m1 '"model_type"'
-```
+Assumed to be already set up.
 
-Senza token HF risponde "Invalid username or password" anche per repo inesistenti; con `-f` curl mostra il codice reale (401/404).
-
-La cache dei modelli è in `~/.cache/huggingface/hub`; si sposta con la variabile `HF_HOME`.
-
-## 5. SSH senza password
-
-Si assume già configurato.
-
-## 6. Applicazione patch per metriche (su entrambi i Mac)
+## 6. Applying the metrics patch (on both Macs)
 ```
 SETUPTOOLS_SCM_PRETEND_VERSION_FOR_MLX_LM=0.32.0+metrics ~/miniforge3/envs/mlx/bin/python -m pip install --no-deps --force-reinstall "git+https://github.com/dorigoa/mlx-lm.git@metrics"
 ```
 
-## 7. Scripts di supporto e avvio
+## 7. Helper scripts and launch
 ```
-git clone git@github.com:dorigoa/mlx-jaccl.git # su entrambi i Mac
+git clone git@github.com:dorigoa/mlx-jaccl.git # on both Macs
 cd mlx-jaccl
-# Nel comando seguente usare il path completo ~/mlx-jaccl/hosts.json e ~/mlx-jaccl/mlx_leak_shim.py
-# invece di ./hosts.json e ./mlx_leak_shim.py, perche' i due script devono essere localizzati anche sul Mac remoto
+
+# In the following command use the full paths ~/mlx-jaccl/hosts.json and ~/mlx-jaccl/mlx_leak_shim.py
+# instead of ./hosts.json and ./mlx_leak_shim.py, because the two scripts must also be located on the remote Mac
 ./mlx_jaccl-start.sh -hostfile ~/mlx-jaccl/hosts.json -leak-patch ~/mlx-jaccl/mlx_leak_shim.py Qwen3.8-27B -max-tokens 131072
 Server start: model=mlx-community/Qwen3.8-27B-8bit, port=8080, thinking=true
 [INFO] Running /Volumes/Home/Alvise/miniforge3/envs/mlx/bin/python /Volumes/Home/Alvise/mlx-apple-doc/mlx_leak_shim.py --model mlx-community/Qwen3.8-27B-8bit --host 0.0.0.0 --port 8080 --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 --max-tokens 131072 --log-level INFO --prompt-cache-bytes 9663676416 --prefill-step-size 256 --chat-template-args '{"enable_thinking": true, "reasoning_effort": "medium"}'
-[leak-shim] rank=0 patch applicata (mlx-lm 0.32.0+metrics)
-[leak-shim] rank=1 patch applicata (mlx-lm 0.32.0+metrics)
+[leak-shim] rank=0 patch applied (mlx-lm 0.32.0+metrics)
+[leak-shim] rank=1 patch applied (mlx-lm 0.32.0+metrics)
 ...
 ...
 ```
-Chiedere metriche:
+Querying metrics:
 ```
 curl -s http://192.168.1.101:8080/v1/metrics | jq '.last_request'
 ```
-funziona solo quando la richiesta e' stata completata. Altrimenti bisogna interrogare continuamente:
+works only once a request has completed. Otherwise you must poll continuously:
 ```
 curl -s http://192.168.1.101:8080/v1/metrics | jq '.batch'
 ```
-Monitorare uso memoria:
+Monitoring memory usage:
 ```
 watch -n 2 "curl -s http://localhost:8080/v1/metrics | jq '{cache_gb: (.prompt_cache.n_bytes/1e9), limite_gb: (.prompt_cache.max_bytes/1e9), ok: (.prompt_cache.n_bytes <= .prompt_cache.max_bytes), active_gb: (.memory.active/1e9)}'"
 ```
-## 7. Modelli compatibili e budget di memoria
+## 8. Compatible models and memory budget
 
-Un modello gira in TP solo se la sua architettura (`model_type`) implementa `shard()` in mlx-lm. Le architetture supportate dalla versione installata si ricavano così:
+A model runs in TP only if its architecture (`model_type`) implements `shard()` in mlx-lm. The architectures supported by the installed version can be listed as follows:
 
 ```bash
 grep -l "def shard" "$(python -c 'import mlx_lm, os; print(os.path.dirname(mlx_lm.__file__))')"/models/*.py \
   | xargs -n1 basename | sed 's/\.py$//' | sort
 ```
 
-Poi confronta con il `model_type` del modello (comando `curl` della sezione 4).
+Then compare against the model's `model_type` .
 
-Budget: circa 27 GB di memoria GPU per nodo con il limite predefinito (circa 75% di 36 GB, stima), quindi circa 50 GB tra pesi e KV cache sui due nodi; circa 55–60 GB alzando `iogpu.wired_limit_mb` (sezione 11).
+Budget: roughly 27 GB of GPU memory per node with the default limit (about 75% of 36 GB, estimated), i.e. about 50 GB for weights and KV cache across the two nodes; about 55–60 GB after raising `iogpu.wired_limit_mb` (section 9).
 
-Peso stimato di un modello quantizzato: parametri × (bit + 0,5) / 8 byte, dove 0,5 bit tiene conto di scale e bias di quantizzazione (gruppi da 64).
+Estimated size of a quantized model: parameters × (bit + 0.5) / 8 bytes, where 0.5 bits accounts for quantization scales and biases (groups of 64).
 
-KV cache per nodo in TP (le teste KV sono divise tra i nodi; parametri in `config.json`):
+KV cache per node in TP (KV heads are split across nodes; parameters in `config.json`):
 
 ```latex
-M_{KV} = \frac{2 \cdot L_{att} \cdot H_{KV} \cdot d_{head} \cdot b \cdot T}{N_{nodi}}
+M_{KV} = \frac{2 \cdot L_{att} \cdot H_{KV} \cdot d_{head} \cdot b \cdot T}{N_{nodes}}
 ```
 
-Dove 2 = chiavi e valori, L\_att = strati ad attenzione completa, H\_KV = teste KV, d\_head = dimensione di una testa, b = byte per valore (2 a 16 bit), T = token di contesto. Il risultato è in byte.
+Where 2 = keys and values, L\_att = full-attention layers, H\_KV = KV heads, d\_head = head dimension, b = bytes per value (2 at 16 bit), T = context tokens. The result is in bytes.
 
-Candidati da verificare con i due comandi (nomi e architetture a memoria, tranne Qwen3-32B-8bit controllato con `curl`):
+Candidates to check with the two commands (names and architectures from memory, except Qwen3-32B-8bit which was checked with `curl`):
 
-| Modello (mlx-community/…) | model\_type | Peso stimato (GB) | Note |
+| Model (mlx-community/…) | model\_type | Estimated size (GB) | Notes |
 | --- | --- | --- | --- |
-| Llama-3.3-70B-Instruct-4bit | llama | 40 | Denso; architettura dell'esempio TP ufficiale MLX |
-| Qwen3-Next-80B-A3B-Instruct-4bit | qwen3\_next | 45 | MoE, memoria al limite |
-| Qwen3-32B-8bit | qwen3 | 35 | Denso |
-| Qwen3-Coder-30B-A3B-Instruct-8bit | qwen3\_moe | 32 | MoE per codice |
-| Qwen3.6-27B-8bit | qwen3\_5 | 29 | Verificato in TP, 22,4 tok/s |
+| Llama-3.3-70B-Instruct-4bit | llama | 40 | Dense; architecture of the official MLX TP example |
+| Qwen3-Next-80B-A3B-Instruct-4bit | qwen3\_next | 45 | MoE, memory at the limit |
+| Qwen3-32B-8bit | qwen3 | 35 | Dense |
+| Qwen3-Coder-30B-A3B-Instruct-8bit | qwen3\_moe | 32 | MoE for code |
+| Qwen3.6-27B-8bit | qwen3\_5 | 29 | Verified in TP, 22.4 tok/s |
 
-I modelli densi traggono più vantaggio dal TP dei MoE con pochi parametri attivi.
+Dense models benefit more from TP than MoE models with few active parameters.
 
-Gemma: nessuna architettura Gemma implementa `shard()` in mlx-lm 0.31.3. Alternative: aggiornare mlx-lm e ripetere il `grep`; usare un solo Mac (Gemma 3 27B a 4 bit circa 15 GB, Gemma 4 31B a 4 bit circa 17 GB); oppure una patch `shard()` sul modello di Llama. Alcune conversioni Gemma 4 (`gemma4_unified`) non si caricano nemmeno su un nodo singolo con mlx-lm 0.31.3.
+Gemma: no Gemma architecture implements `shard()` in mlx-lm 0.31.3. Alternatives: update mlx-lm and re-run the `grep`; use a single Mac (Gemma 3 27B at 4 bit is about 15 GB, Gemma 4 31B at 4 bit is about 17 GB); or a `shard()` patch on the Llama model. Some Gemma 4 conversions (`gemma4_unified`) don't load even on a single node with mlx-lm 0.31.3.
 
-## 8. Ottimizzazione e risoluzione problemi
+## 9. Tuning and troubleshooting
 
-Più memoria GPU, su entrambi i Mac (non persiste al riavvio; 30000 MB lascia circa 6 GB a macOS, valore prudente stimato):
+More GPU memory, on both Macs (does not persist across reboots; 30000 MB leaves about 6 GB for macOS, a conservative estimate):
 
 ```bash
 sudo sysctl iogpu.wired_limit_mb=30000
 ```
 
-Processi rimasti attivi dopo un crash, da pulire prima di rilanciare:
+Processes left running after a crash, to clean up before relaunching:
 
 ```bash
 pkill -f tp_generate.py; ssh 192.168.20.2 'pkill -f tp_generate.py'
 ```
 
-| Sintomo | Causa | Soluzione |
+| Symptom | Cause | Fix |
 | --- | --- | --- |
-| `Permission denied` / `cannot execute` | Script lanciato come comando dopo `--` | Percorso assoluto di Python dopo `--`, o `tp.sh` |
-| `cat None … non-zero exit status 1` | Effetto collaterale della chiusura dopo un altro errore | Ignorare, risolvere il primo errore |
-| `No module named 'mlx_lm.examples'` | Esempi non inclusi nel pacchetto pip | Usare `tp_generate.py` |
-| `exec: mlx.launch: not found` | Riga di comando corrotta nel copia-incolla | Usare `tp.sh` |
-| `errno 22` (RTR) o `errno 60` all'avvio | Selezione errata del GID RDMA su Thunderbolt (bug noto, PR mlx #3468) | Aggiornare mlx su entrambi i nodi |
-| Blocco con prompt lunghi, senza errori | Prefill a più blocchi in TP (segnalato su modelli grandi) | `--prefill-step-size` ≥ lunghezza del prompt |
-| Blocco con `--temp > 0` | Rank che campionano token diversi | Stesso `--seed` (già impostato dallo script) |
-| Errore `-12` in Send/Recv, `ibv_devinfo` bloccato | Stato RDMA incoerente (segnalato su cluster a 4 nodi) | Riavviare entrambi i Mac |
-| HF: "Invalid username or password" | Repo inesistente o gated | `curl` con token (sezione 4), controllare il nome |
-| Memoria esaurita | Pesi + KV cache oltre il limite | `iogpu.wired_limit_mb`, `--kv-bits 8`, `--max-kv-size` |
+| `Permission denied` / `cannot execute` | Script launched as a command after `--` | Absolute path to Python after `--`, or `tp.sh` |
+| `cat None … non-zero exit status 1` | Side effect of the shutdown after another error | Ignore, fix the first error |
+| `No module named 'mlx_lm.examples'` | Examples not included in the pip package | Use `tp_generate.py` |
+| `exec: mlx.launch: not found` | Corrupted command line from copy-paste | Use `tp.sh` |
+| `errno 22` (RTR) or `errno 60` at startup | Wrong RDMA GID selection over Thunderbolt (known bug, PR mlx #3468) | Update mlx on both nodes |
+| Hang with long prompts, no errors | Multi-block prefill in TP (reported on large models) | `--prefill-step-size` ≥ prompt length |
+| Hang with `--temp > 0` | Ranks sampling different tokens | Same `--seed` (already set by the script) |
+| Error `-12` in Send/Recv, `ibv_devinfo` hanging | Inconsistent RDMA state (reported on a 4-node cluster) | Reboot both Macs |
+| HF: "Invalid username or password" | Repo non-existent or gated | `curl` with token (section 4), check the name |
+| Out of memory | Weights + KV cache beyond the limit | `iogpu.wired_limit_mb`, `--kv-bits 8`, `--max-kv-size` |
 
-## Connettere con Claude Code
-Installare un proxy:
-```
-git clone https://github.com/dorigoa/claude-code-mlx-proxy.git   && cd claude-code-mlx-proxy && ls -1 && (command -v uv && uv --version || echo "uv ASSENTE")
-```
-deve stampare la versione uv disponibile (altrimenti: `python -m pip install uv`)
+## 10. Glossary and references
 
-Creare il file `.env`:
-```
-# .env - Example configuration for the proxy server
-HOST=127.0.0.1
-PORT=8888
-# URL of the mlx-lm OpenAI-compatible server (must include /v1)
-MLX_SERVER_URL=http://192.168.1.101:8080/v1
-# API-exposed model name (what Claude Code sees)
-API_MODEL_NAME=claude-4-sonnet-20250514
-# Tool mode: full / slim / none
-# TOOL_MODE=slim
-# Enable verbose debug logging
-VERBOSE=false
-MODEL_NAME=default_model
-```
-Quindi scaricare i pacchetti:
-```
-uv sync
-```
-Runnare il proxy:
-```
-uv run main.py
-```
-
-## 9. Glossario e riferimenti
-
-| Sigla | Significato |
+| Abbrev. | Meaning |
 | --- | --- |
-| RDMA | Remote Direct Memory Access: trasferimento diretto tra memorie dei due Mac senza passare dallo stack TCP/IP |
-| JACCL | Libreria di comunicazione collettiva di Apple usata da MLX per RDMA su Thunderbolt |
-| TP | Tensor Parallelism: ogni nodo tiene tutti gli strati, ma con i pesi divisi |
-| Rank | Indice del processo nel gruppo distribuito (0 = coordinatore) |
-| KV cache | Memoria delle chiavi/valori di attenzione: conserva il contesto già elaborato |
-| MoE | Mixture of Experts: per ogni token lavora solo una parte dei pesi |
-| MTU | Dimensione massima di un pacchetto di rete (9000 = jumbo frame) |
-| GID | Identificativo globale di una porta RDMA |
+| RDMA | Remote Direct Memory Access: direct transfer between the memories of the two Macs without going through the TCP/IP stack |
+| JACCL | Apple's collective communication library used by MLX for RDMA over Thunderbolt |
+| TP | Tensor Parallelism: each node holds all layers, but with the weights split |
+| Rank | Index of the process in the distributed group (0 = coordinator) |
+| KV cache | Keys/values attention memory: retains the already-processed context |
+| MoE | Mixture of Experts: for each token only a subset of the weights is active |
+| MTU | Maximum size of a network packet (9000 = jumbo frame) |
+| GID | Global identifier of an RDMA port |
 | HF | Hugging Face |
 
-Riferimenti (letti tramite ricerca, non verificati in dettaglio):
+References (read via search, not verified in detail):
 
 - [MLX — Distributed Communication](https://ml-explore.github.io/mlx/build/html/usage/distributed.html)
 - [MLX — Launching Distributed Programs](https://ml-explore.github.io/mlx/build/html/usage/launching_distributed.html)
 - [WWDC26 — Explore distributed inference and training with MLX](https://developer.apple.com/videos/play/wwdc2026/233/)
-- [mlx PR #3468 — GID su Thunderbolt RDMA](https://github.com/ml-explore/mlx/pull/3468)
-- [mlx discussion #3939 — prefill bloccato in TP](https://github.com/ml-explore/mlx/discussions/3939)
-- [mlx discussion #4247 — errore -12 in Send/Recv](https://github.com/ml-explore/mlx/discussions/4247)
+- [mlx PR #3468 — GID over Thunderbolt RDMA](https://github.com/ml-explore/mlx/pull/3468)
+- [mlx discussion #3939 — prefill hang in TP](https://github.com/ml-explore/mlx/discussions/3939)
+- [mlx discussion #4247 — error -12 in Send/Recv](https://github.com/ml-explore/mlx/discussions/4247)

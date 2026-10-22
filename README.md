@@ -1,7 +1,7 @@
 # Distributed MLX over RDMA on Thunderbolt 5 — 2× Mac Studio
 ## + Patch for metrics
 
-Oct 13, 2026 · @Alvise Dorigo
+Oct 22, 2026 · @Alvise Dorigo
 
 Reference doc: https://ml-explore.github.io/mlx/build/html/usage/distributed.html
 

@@ -115,8 +115,13 @@ Assumed to be already set up.
 git clone git@github.com:dorigoa/mlx-jaccl.git # on both Macs
 cd mlx-jaccl
 
+# Execute a self test, especially after an update of mlx and mlx-lm packages (step 3)
+conda activate mlx # if not already done
+python mlx_leak_shim.py --self-test
+
 # In the following command use the full paths ~/mlx-jaccl/hosts.json and ~/mlx-jaccl/mlx_leak_shim.py
 # instead of ./hosts.json and ./mlx_leak_shim.py, because the two scripts must also be located on the remote Mac
+
 ./mlx_jaccl-start.sh -hostfile ~/mlx-jaccl/hosts.json -leak-patch ~/mlx-jaccl/mlx_leak_shim.py Qwen3.8-27B -max-tokens 131072
 Server start: model=mlx-community/Qwen3.8-27B-8bit, port=8080, thinking=true
 [INFO] Running /Volumes/Home/Alvise/miniforge3/envs/mlx/bin/python /Volumes/Home/Alvise/mlx-apple-doc/mlx_leak_shim.py --model mlx-community/Qwen3.8-27B-8bit --host 0.0.0.0 --port 8080 --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 --max-tokens 131072 --log-level INFO --prompt-cache-bytes 9663676416 --prefill-step-size 256 --chat-template-args '{"enable_thinking": true, "reasoning_effort": "medium"}'

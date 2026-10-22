@@ -5,20 +5,20 @@ Oct 22, 2026 · @Alvise Dorigo
 
 Reference doc: https://ml-explore.github.io/mlx/build/html/usage/distributed.html
 
-Verified setup: 2× Mac Studio M4 Max 36 GB over Thunderbolt 5, mlx 0.32.2 + mlx-lm 0.31.3, JACCL (RDMA) backend, tensor parallel across 2 nodes. Qwen3.6-27B-8bit generates 22.4 tok/s.
+Verified setup: 2× Mac Studio M4 Max 36 GB over Thunderbolt 5, mlx 0.32.4 + mlx-lm 0.32.2, JACCL (RDMA) backend, tensor parallelism across 2 nodes. Qwen3.6-27B-8bit generates 22.4 tok/s.
 
 ## 1. Prerequisites and enabling RDMA
 
-Both Macs need macOS 26.2 or later, and a direct Thunderbolt 5 cable between the two.
+Both Macs need macOS 26.2 or later, and a direct certified Thunderbolt 5 cable (80 Gbps) between the two.
 
-Enabling RDMA, one time per Mac:
+Enabling RDMA, on both Mac:
 
 1. Boot into recoveryOS: with the Mac off, hold the power button down until "Options" appears.
 2. Menu Utility → Terminal.
 3. Run `rdma_ctl enable`.
 4. Reboot normally.
 
-Verification (on both Macs):
+Verification, on both Macs:
 
 ```bash
 sw_vers -productVersion
@@ -26,7 +26,7 @@ rdma_ctl status
 ibv_devinfo | grep -E 'hca_id|state'
 ```
 
-Expected: version ≥ 26.2, `enabled`, device `rdma_en3` (Mac1) / `rdma_en4` (Mac2) in state `PORT_ACTIVE`.
+Expected: version ≥ 26.2, `enabled`, device `rdma_en3` (Mac1) / `rdma_en4` (Mac2) in state `PORT_ACTIVE` (`rdma_en3` and `rdma_en4` are for my specific setup).
 
 ## 2. Thunderbolt network: IP, MTU 9000, bridge
 
@@ -58,8 +58,6 @@ Verify jumbo frames from Mac1 (8972 = 9000 − 28 bytes of IP+ICMP headers, `-D`
 ping -c3 -D -s 7168 192.168.20.2
 ```
 
-Automatic alternative: `mlx.distributed_config --backend jaccl --hosts <h1>,<h2> --over thunderbolt --auto-setup --output hosts.json` configures the network and the hostfile, but requires passwordless sudo and uses the en0 IP for rank 0.
-
 ## 3. Python: Miniforge and the mlx environment
 
 The environment must be identical and at the same path on both Macs: `mlx.launch` starts the same Python executable over SSH on both.
@@ -78,7 +76,7 @@ Environment and packages (on both Macs, versions pinned for reproducibility):
 ```bash
 conda create -y -n mlx python=3.12
 conda activate mlx
-pip install mlx==0.32.3 mlx-lm==0.32
+pip install mlx==0.32.4 mlx-lm==0.32.2
 python -c "import mlx.core as mx, mlx_lm; print(mx.__version__, mlx_lm.__version__)"
 which python
 ```
@@ -108,18 +106,6 @@ hf auth whoami
 
 For gated (access-restricted) models, accept the license on the model page first.
 
-Inspect a model's architecture without downloading it:
-
-```bash
-repo=mlx-community/Qwen3-32B-8bit
-curl -sSfL -H "Authorization: Bearer $HF_TOKEN" \
-  "https://huggingface.co/$repo/resolve/main/config.json" | grep -m1 '"model_type"'
-```
-
-Without a token, HF answers "Invalid username or password" even for non-existent repos; with `-f` curl shows the real code (401/404).
-
-The model cache lives in `~/.cache/huggingface/hub`; move it with the `HF_HOME` variable.
-
 ## 5. Passwordless SSH
 
 Assumed to be already set up.
@@ -133,6 +119,7 @@ SETUPTOOLS_SCM_PRETEND_VERSION_FOR_MLX_LM=0.32.0+metrics ~/miniforge3/envs/mlx/b
 ```
 git clone git@github.com:dorigoa/mlx-jaccl.git # on both Macs
 cd mlx-jaccl
+
 # In the following command use the full paths ~/mlx-jaccl/hosts.json and ~/mlx-jaccl/mlx_leak_shim.py
 # instead of ./hosts.json and ./mlx_leak_shim.py, because the two scripts must also be located on the remote Mac
 ./mlx_jaccl-start.sh -hostfile ~/mlx-jaccl/hosts.json -leak-patch ~/mlx-jaccl/mlx_leak_shim.py Qwen3.8-27B -max-tokens 131072
@@ -164,7 +151,7 @@ grep -l "def shard" "$(python -c 'import mlx_lm, os; print(os.path.dirname(mlx_l
   | xargs -n1 basename | sed 's/\.py$//' | sort
 ```
 
-Then compare against the model's `model_type` (the `curl` command from section 4).
+Then compare against the model's `model_type` .
 
 Budget: roughly 27 GB of GPU memory per node with the default limit (about 75% of 36 GB, estimated), i.e. about 50 GB for weights and KV cache across the two nodes; about 55–60 GB after raising `iogpu.wired_limit_mb` (section 9).
 
@@ -218,37 +205,6 @@ pkill -f tp_generate.py; ssh 192.168.20.2 'pkill -f tp_generate.py'
 | Error `-12` in Send/Recv, `ibv_devinfo` hanging | Inconsistent RDMA state (reported on a 4-node cluster) | Reboot both Macs |
 | HF: "Invalid username or password" | Repo non-existent or gated | `curl` with token (section 4), check the name |
 | Out of memory | Weights + KV cache beyond the limit | `iogpu.wired_limit_mb`, `--kv-bits 8`, `--max-kv-size` |
-
-## Connecting with Claude Code
-Install a proxy:
-```
-git clone https://github.com/dorigoa/claude-code-mlx-proxy.git   && cd claude-code-mlx-proxy && ls -1 && (command -v uv && uv --version || echo "uv MISSING")
-```
-it must print the available uv version (otherwise: `python -m pip install uv`)
-
-Create the `.env` file:
-```
-# .env - Example configuration for the proxy server
-HOST=127.0.0.1
-PORT=8888
-# URL of the mlx-lm OpenAI-compatible server (must include /v1)
-MLX_SERVER_URL=http://192.168.1.101:8080/v1
-# API-exposed model name (what Claude Code sees)
-API_MODEL_NAME=claude-4-sonnet-20250514
-# Tool mode: full / slim / none
-# TOOL_MODE=slim
-# Enable verbose debug logging
-VERBOSE=false
-MODEL_NAME=default_model
-```
-Then download the packages:
-```
-uv sync
-```
-Run the proxy:
-```
-uv run main.py
-```
 
 ## 10. Glossary and references
 

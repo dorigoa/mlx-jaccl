@@ -9,28 +9,28 @@ expected output:
     CRASH allo step 10395: [metal::malloc] Resource limit (499000) exceeded.
 --- fase patched ---
     OK: 12000 step x 48 layer, valori corretti
-    [leak-shim] rank=? patch applicata (mlx-lm 0.32.0+metrics)
+    [leak-shim] rank=? patch applicata (mlx-lm 0.32.2+metrics.gfe5f988)
 --- fase stop-unpatched ---
     token generati rank0=5 rank1=200, collettive stop rank0=0 rank1=0, errori=['NotImplementedError', None]
     DESYNC: i rank escono da punti diversi
 --- fase stop-patched ---
     token generati rank0=9 rank1=9, collettive stop rank0=2 rank1=2, errori=[None, None]
     OK: entrambi i rank fermi al token 9
-    [leak-shim] rank=? patch stop applicata (mlx-lm 0.32.0+metrics, sync ogni 8 token)
+    [leak-shim] rank=? patch stop applicata (mlx-lm 0.32.2+metrics.gfe5f988, sync ogni 8 token)
 --- fase keepalive-unpatched ---
     token letti 106/106, keepalive prima della disconnessione 0, BrokenPipe=True, stop=True
     SILENZIO: disconnessione rilevata solo a generazione finita
 --- fase keepalive-patched ---
     token letti 15/106, keepalive prima della disconnessione 1, BrokenPipe=True, stop=True
     OK: disconnessione rilevata 0 token dopo
-    [leak-shim] rank=? patch keepalive applicata (mlx-lm 0.32.0+metrics, dopo 0.05s di silenzio)
+    [leak-shim] rank=? patch keepalive applicata (mlx-lm 0.32.2+metrics.gfe5f988, dopo 0.05s di silenzio)
 --- fase cache-unpatched ---
     prompt cache: 10 sequenze, 10.73 GB (limite 4.83 GB)
     SFORA: il limite in byte non viene applicato
 --- fase cache-patched ---
     prompt cache: 4 sequenze, 4.29 GB (limite 4.83 GB)
     OK: limite rispettato
-    [leak-shim] rank=? patch limite cache applicata (mlx-lm 0.32.0+metrics)
+    [leak-shim] rank=? patch limite cache applicata (mlx-lm 0.32.2+metrics.gfe5f988)
     [leak-shim] rank=? prompt cache limitata a 4.83 GB
 --- fase pin-unpatched ---
     /v1/models: ['mlx-community/GLM-4.7-Flash-8bit', 'mlx-community/Qwen3.8-27B-4bit', 'mlx-community/Qwen3.8-27B-8bit']; richiesta per mlx-community/GLM-4.7-Flash-8bit servita con mlx-community/GLM-4.7-Flash-8bit
@@ -38,14 +38,14 @@ expected output:
 --- fase pin-patched ---
     /v1/models: ['mlx-community/Qwen3.8-27B-4bit']; richiesta per mlx-community/GLM-4.7-Flash-8bit servita con mlx-community/Qwen3.8-27B-4bit
     OK: il client vede e usa solo il modello di avvio
-    [leak-shim] rank=? patch modello bloccato applicata (mlx-lm 0.32.0+metrics)
+    [leak-shim] rank=? patch modello bloccato applicata (mlx-lm 0.32.2+metrics.gfe5f988)
     [leak-shim] rank=? richiesto il modello 'mlx-community/GLM-4.7-Flash-8bit': servito con 'mlx-community/Qwen3.8-27B-4bit'
 --- fase kvbits-unpatched ---
     CRASH di glm4_moe_lite con --kv-bits: 'list' object has no attribute 'swapaxes'
 --- fase kvbits-patched ---
     cache dopo la generazione: {'glm4_moe_lite': ['KVCache'], 'llama': ['QuantizedKVCache']}
     OK: GLM genera a precisione piena, Llama resta quantizzato
-    [leak-shim] rank=? patch kv-bits applicata (mlx-lm 0.32.0+metrics)
+    [leak-shim] rank=? patch kv-bits applicata (mlx-lm 0.32.2+metrics.gfe5f988)
     [leak-shim] rank=? glm4_moe_lite: attenzione MLA, la cache KV resta a precisione piena (--kv-bits ignorato)
 PASS: leak riprodotto senza patch, assente con la patch
 PASS: desync dei rank allo stop riprodotto senza patch, assente con la patch
@@ -201,12 +201,12 @@ KEEPALIVE_BLOCKS = (
             for gen in response:
 """),
     ("""\
-                    self.wfile.flush()
-                    reasoning_text = ""
+                        self.wfile.flush()
+                    pending = TextStateMachine.Delta()
 """, """\
-                    self.wfile.flush()
-                    _ka_last = time.monotonic()  # [keepalive-shim]
-                    reasoning_text = ""
+                        self.wfile.flush()
+                        _ka_last = time.monotonic()  # [keepalive-shim]
+                    pending = TextStateMachine.Delta()
 """),
     ("""\
                 if gen.finish_reason is not None:
@@ -645,16 +645,15 @@ def _stop_phase(patched):
             super().put(item, *args, **kwargs)
 
     def rank_self(rank):
-        tok = NS(has_thinking=False, has_tool_calling=False, tool_parser=None)
-        stop_sequences = NS(matcher=lambda: NS(advance=lambda t: False))
+        tok = NS(has_thinking=False, has_tool_calling=False, tool_parser=None,
+                 structural_markers=(), response_transitions={})
         metric = NS(prefill=lambda *a: None, token=lambda: None, finish_reason=None)
         return NS(
             _is_distributed=True,
             _share_object=lambda obj: share(rank, obj),
             model_provider=NS(model=None, tokenizer=tok, draft_model=None,
                               model_key=("fake",)),
-            _tokenize=lambda t, r, a: (list(range(10)), None, None, "normal"),
-            _make_state_machine=lambda *a: (stop_sequences, None),
+            _tokenize=lambda t, r, a: (list(range(10)), None, None, "normal", None),
             _log_cache_stats=lambda: None,
             prompt_cache=NS(fetch_nearest_cache=lambda k, p: (None, p),
                             insert_cache=lambda *a, **k: None),
@@ -708,32 +707,22 @@ def _keepalive_phase(patched):
         print("patch non applicabile")
         return 1
 
-    class FakeTextStateMachine:  # lo stato e' la prima lettera del testo
-        STATES = {"R": "reasoning", "T": "tool", "N": "normal"}
-
-        @staticmethod
-        def step(sm_state, text):
-            return sm_state, text, FakeTextStateMachine.STATES[text[0]]
-
-        @staticmethod
-        def flush(sm_state):
-            return sm_state, "", "normal"
-
-        @staticmethod
-        def discard(sm_state):
-            return sm_state, "normal"
-
-    server.TextStateMachine = FakeTextStateMachine
-    server.ToolCallFormatter = lambda parser, tools, stream: (lambda calls: calls)
+    # Vera TextStateMachine: il testo della tool call esce solo alla chiusura
+    text_sm = server.TextStateMachine({
+        "reasoning": [("</think>", "normal"), ("<tool_call>", "tool")],
+        "normal": [("<tool_call>", "tool")],
+        "tool": [("</tool_call>", None)],
+    })
 
     total = KA_REASONING + KA_TOOL_TOKENS + 1
     pulled = [0]
     disconnected = [False]
 
     def generation():
-        seq = ["R"] * KA_REASONING + ["T"] * KA_TOOL_TOKENS + ["N"]
+        seq = (["Hmm "] * KA_REASONING + ["<tool_call>"] + ["x"] * (KA_TOOL_TOKENS - 1)
+               + ["</tool_call>"])
         for i, text in enumerate(seq):
-            if text == "T":
+            if KA_REASONING <= i < KA_REASONING + KA_TOOL_TOKENS:
                 time.sleep(0.01)
             pulled[0] += 1
             if pulled[0] == KA_REASONING + KA_DISCONNECT:
@@ -755,8 +744,9 @@ def _keepalive_phase(patched):
             pass
 
     ctx = server.GenerationContext(
-        has_tool_calling=True, has_thinking=True, tool_parser=None,
-        text_sm=NS(make_state=lambda s: s), initial_state="reasoning", prompt=[0])
+        has_tool_calling=True, has_thinking=True,
+        tool_parser=lambda text, tools: {"name": "f", "arguments": {}},
+        text_sm=text_sm, initial_state="reasoning", prompt=[0])
 
     class Handler:
         stream = True

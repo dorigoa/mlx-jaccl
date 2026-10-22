@@ -8,15 +8,15 @@ Reference doc: https://ml-explore.github.io/mlx/build/html/usage/distributed.htm
 Verified setup: 2× Mac Studio M4 Max 36 GB over Thunderbolt 5, mlx 0.32.4 + mlx-lm 0.32.2, JACCL (RDMA) backend, tensor parallelism across 2 nodes. Qwen3.6-27B-8bit generates 22.4 tok/s.
 
 # Table of contents
-1. [1. Prerequisites and enabling RDMA](#1-prerequisites-and-enabling-rdma)
-2. [2. Thunderbolt network: IP, MTU 9000, bridge](#2-thunderbolt-network-ip-mtu-9000-bridge)
-3. [3. Python: Miniforge and the mlx environment](#3-python-miniforge-and-the-mlx-environment)
-4. [4. Hugging Face CLI (hf): installation, token, download](#4-hugging-face-cli-hf-installation-token-download)
-5. [5. Passwordless SSH](#5-passwordless-ssh)
-6. [6. Helper scripts and launch](#6-helper-scripts-and-launch)
-7. [7. Compatible models and memory budget](#7-compatible-models-and-memory-budget)
-8. [8. Tuning and troubleshooting](#8-tuning-and-troubleshooting)
-9. [9. Glossary and references](#9-glossary-and-references)
+1. [Prerequisites and enabling RDMA](#1-prerequisites-and-enabling-rdma)
+2. [Thunderbolt network: IP, MTU 9000, bridge](#2-thunderbolt-network-ip-mtu-9000-bridge)
+3. [Python: Miniforge and the mlx environment](#3-python-miniforge-and-the-mlx-environment)
+4. [Hugging Face CLI (hf): installation, token, download](#4-hugging-face-cli-hf-installation-token-download)
+5. [Passwordless SSH](#5-passwordless-ssh)
+6. [Helper scripts and launch](#6-helper-scripts-and-launch)
+7. [Compatible models and memory budget](#7-compatible-models-and-memory-budget)
+8. [Tuning and troubleshooting](#8-tuning-and-troubleshooting)
+9. [Glossary and references](#9-glossary-and-references)
 
 ## 1. Prerequisites and enabling RDMA
 

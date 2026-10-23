@@ -158,11 +158,48 @@ watch -n 2 "curl -s http://localhost:8080/v1/metrics | jq '{cache_gb: (.prompt_c
 A model runs in TP only if its architecture (`model_type`) implements `shard()` in mlx-lm. The architectures supported by the installed version can be listed as follows:
 
 ```bash
+conda activate mlx
+
 grep -l "def shard" "$(python -c 'import mlx_lm, os; print(os.path.dirname(mlx_lm.__file__))')"/models/*.py \
   | xargs -n1 basename | sed 's/\.py$//' | sort
+
+deepseek_v2
+deepseek_v3
+deepseek_v32
+deepseek_v41
+exaone_moe
+glm4_moe
+glm4_moe_lite
+gpt_oss
+iquestloopcoder
+kimi_k25
+kimi_k3
+llama
+longcat_flash
+longcat_flash_ngram
+minimax
+minimax_m3_vl
+ministral3
+mistral4
+muse_spark
+qwen2
+qwen3
+qwen3_5
+qwen3_moe
+step3p5
 ```
 
 Then compare against the model's `model_type` .
+
+Then to check if a model on HF, e.g. "mlx-community/DeepSeek-R1-Distill-Qwen-32B-4bit" can be ran in distributed way by `mlx-lm` with `jaccl` backend do the following:
+```
+conda activate mlx
+repo=mlx-community/DeepSeek-R1-Distill-Qwen-32B-4bit
+curl -sSfL -H "Authorization: Bearer $HF_TOKEN" "https://huggingface.co/$repo/resolve/main/config.json" | grep -m1 '"model_type"'
+    "model_type": "qwen2",
+```
+
+and match the answer (`qwen2` in this case) against the list above. The list above could change with future releases.
 
 Budget: roughly 27 GB of GPU memory per node with the default limit (about 75% of 36 GB, estimated), i.e. about 50 GB for weights and KV cache across the two nodes; about 55–60 GB after raising `iogpu.wired_limit_mb` (section 9).
 

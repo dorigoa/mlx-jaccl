@@ -158,6 +158,8 @@ watch -n 2 "curl -s http://localhost:8080/v1/metrics | jq '{cache_gb: (.prompt_c
 A model runs in TP only if its architecture (`model_type`) implements `shard()` in mlx-lm. The architectures supported by the installed version can be listed as follows:
 
 ```bash
+conda activate mlx
+
 grep -l "def shard" "$(python -c 'import mlx_lm, os; print(os.path.dirname(mlx_lm.__file__))')"/models/*.py \
   | xargs -n1 basename | sed 's/\.py$//' | sort
 ```

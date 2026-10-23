@@ -84,10 +84,10 @@ def build_command(args):
 
 def main(argv=None):
     args = parse_args(argv)
-    if not Path(args.hostfile).is_file():
-        die(f"hostfile not found: {args.hostfile}")
-    if not Path(args.leak_patch).is_file():
-        die(f"shim not found: {args.leak_patch}")
+    # if not Path(args.hostfile).is_file():
+    #     die(f"hostfile not found: {args.hostfile}")
+    # if not Path(args.leak_patch).is_file():
+    #     die(f"shim not found: {args.leak_patch}")
     for exe in (PYTHON_BIN, MLX_LAUNCH):
         if not os.access(exe, os.X_OK):
             die(f"not found or not executable: {exe}")

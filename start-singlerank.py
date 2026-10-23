@@ -12,7 +12,7 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 ENV_BIN = Path.home() / "miniforge3" / "envs" / "mlxv" / "bin"
 PYTHON_BIN = ENV_BIN / "python"
-MLX_LAUNCH = ENV_BIN / "mlx_vlm.server --model mlx-community/Qwen3.8-27B-4bit --draft-model mlx-community/Qwen3.8-27B-MTP-4bit --draft-kind mtp"
+MLX_LAUNCH = ENV_BIN / "mlx_vlm.server"# "
 
 
 def die(msg):
@@ -77,6 +77,9 @@ def build_command(args):
     ]
     return [
         str(MLX_LAUNCH), "--verbose", 
+        "--model", "mlx-community/Qwen3.8-27B-4bit",
+        "--draft-model", "mlx-community/Qwen3.8-27B-MTP-4bit",
+        "--draft-kind mtp",
         "--env", "HF_HUB_OFFLINE=0",
         "--", str(PYTHON_BIN), *server_args,
     ]

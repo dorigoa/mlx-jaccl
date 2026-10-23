@@ -74,7 +74,7 @@ def build_command(args):
         "--max-tokens", str(args.max_tokens)
     ]
     return [
-        str(MLX_LAUNCH), "--verbose", 
+        str(MLX_LAUNCH), 
         "--model", "mlx-community/Qwen3.8-27B-4bit",
         "--draft-model", "mlx-community/Qwen3.8-27B-MTP-4bit",
         "--draft-kind mtp",

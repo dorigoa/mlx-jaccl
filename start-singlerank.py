@@ -71,8 +71,7 @@ def build_command(args):
     server_args = [
         "--host", str(args.host), "--port", str(args.port),
         "--temp", args.temp, "--top-p", args.top_p, "--top-k", "20", "--min-p", "0.0",
-        "--max-tokens", str(args.max_tokens),
-        "--log-level", "DEBUG" if args.debug else "INFO"
+        "--max-tokens", str(args.max_tokens)
     ]
     return [
         str(MLX_LAUNCH), "--verbose", 

@@ -153,51 +153,6 @@ Monitoring memory usage:
 ```
 watch -n 2 "curl -s http://localhost:8080/v1/metrics | jq '{cache_gb: (.prompt_cache.n_bytes/1e9), limite_gb: (.prompt_cache.max_bytes/1e9), ok: (.prompt_cache.n_bytes <= .prompt_cache.max_bytes), active_gb: (.memory.active/1e9)}'"
 ```
-Stress test script:
-```
-import json, sys, pathlib, textwrap, urllib.request
-import argparse  # Modifica: importato argparse
-
-# Configurazione argomenti da riga di comando
-parser = argparse.ArgumentParser(description="Invia una richiesta a un server locale.")
-parser.add_argument(
-    "-p", "--port", 
-    type=int, 
-    default=12000, 
-    help="Porta del server (default: 12000)"
-)
-args = parser.parse_args()
-
-code = pathlib.Path(textwrap.__file__).read_text()[:4000]   # circa 1000 token di Python
-prompt = ("Riscrivi il codice seguente identico, rinominando la classe "
-          "TextWrapper in LineWrapper. Rispondi solo con il codice.\n\n" + code)
-payload = {
-    "messages": [{"role": "user", "content": prompt}],
-    "max_tokens": 1500,
-    "temperature": 0,
-    "cache_prompt": False,
-    "chat_template_kwargs": {"reasoning_effort": "low"},
-}
-
-# Modifica: Utilizzo f-string per inserire la porta scelta dall'utente
-url = f"http://localhost:{args.port}/v1/chat/completions"
-
-req = urllib.request.Request(
-    url,
-    data=json.dumps(payload).encode(),
-    headers={"Content-Type": "application/json"})
-
-try:
-    with urllib.request.urlopen(req, timeout=1800) as r:
-        t = json.load(r)["timings"]
-except Exception as e:
-    sys.exit(f"Errore richiesta su localhost:{args.port}: {e}")
-
-dn, da = t.get("draft_n", 0), t.get("draft_n_accepted", 0)
-acc = 100.0 * da / dn if dn else 0.0
-print("n {} | tg {:.1f} t/s | draft {} | accettati {} ({:.0f}%)".format(
-    t["predicted_n"], t["predicted_per_second"], dn, da, acc))
-```
 ## 7. Compatible models and memory budget
 
 A model runs in TP only if its architecture (`model_type`) implements `shard()` in mlx-lm. The architectures supported by the installed version can be listed as follows:

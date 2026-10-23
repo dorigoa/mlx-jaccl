@@ -69,7 +69,6 @@ def build_command(args):
         "reasoning_effort": "xhigh" if args.xhigh else "medium",
     })
     server_args = [
-        args.leak_patch,
         "--host", str(args.host), "--port", str(args.port),
         "--temp", args.temp, "--top-p", args.top_p, "--top-k", "20", "--min-p", "0.0",
         "--max-tokens", str(args.max_tokens),

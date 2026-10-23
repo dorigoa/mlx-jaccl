@@ -8,6 +8,7 @@ import shlex
 import sys
 from pathlib import Path
 
+
 MODELS = ("Qwen3.8-27B", "GLM-4.7-Flash", "Qwen3.6-35B-A3B", "Llama-3.3-70B-Instruct")
 SCRIPT_DIR = Path(__file__).resolve().parent
 ENV_BIN = Path.home() / "miniforge3" / "envs" / "mlx" / "bin"

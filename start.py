@@ -26,7 +26,6 @@ def port(value):
 
 
 def number(value):
-    """Controlla che sia un numero ma lo passa al server cosi' come e' scritto."""
     try:
         float(value)
     except ValueError:
@@ -81,7 +80,7 @@ def model_id(args):
 def build_command(args):
     cache = args.cache_gbytes
     if cache is None:
-        # Qwen3.x sono ibridi: con --kv-bits la prompt cache non fa mai hit
+        # Qwen3.x are hybrid: with --kv-bits the prompt cache never does hit
         cache = "0" if args.model.startswith("Qwen") else "4.5"
     chat_template_args = json.dumps({
         "enable_thinking": not args.nothink,

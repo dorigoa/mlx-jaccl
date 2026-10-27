@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 
 
-MODELS = ("Qwen3.8-27B", "GLM-4.7-Flash", "Qwen3.6-35B-A3B", "Llama-3.3-70B-Instruct")
+#MODELS = ("Qwen3.8-27B", "GLM-4.7-Flash", "Qwen3.6-35B-A3B", "Llama-3.3-70B-Instruct")
 SCRIPT_DIR = Path(__file__).resolve().parent
 ENV_BIN = Path.home() / "miniforge3" / "envs" / "mlx" / "bin"
 PYTHON_BIN = ENV_BIN / "python"
@@ -54,7 +54,7 @@ def parse_args(argv):
         description="Start mlx_lm.server on the jaccl cluster (through mlx_leak_shim_v2.py).",
         allow_abbrev=False,
     )
-    parser.add_argument("model", choices=MODELS, help="model to serve")
+    #parser.add_argument("model", choices=MODELS, help="model to serve")
     parser.add_argument("-8bit", dest="eight_bit", action="store_true",
                         help="use 8bit quantization (default: 4bit)")
     parser.add_argument("-nothink", action="store_true",
@@ -88,14 +88,15 @@ def parse_args(argv):
 
 
 def model_id(args):
-    return f"mlx-community/{args.model}-{'8bit' if args.eight_bit else '4bit'}"
+    #return f"mlx-community/{args.model}-{'8bit' if args.eight_bit else '4bit'}"
+    return f"mlx-community/Qwen3.8-27B-{'8bit' if args.eight_bit else '4bit'}"
 
 
 def build_command(args):
     cache = args.cache_gbytes
     if cache is None:
         # Qwen3.x are hybrid: with --kv-bits the prompt cache never does hit
-        cache = "0" if args.model.startswith("Qwen") else "4.5"
+        cache = "0" #if args.model.startswith("Qwen") else "4.5"
     chat_template_args = json.dumps({
         "enable_thinking": not args.nothink,
         "reasoning_effort": "xhigh" if args.xhigh else "medium",

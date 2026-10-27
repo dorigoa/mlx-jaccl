@@ -176,7 +176,7 @@ cd mlx-jaccl
 
 | File | Purpose |
 | --- | --- |
-| `start.py` | Builds and runs the `mlx.launch` command (JACCL backend, hostfile, shim, model options) and prints the speed of each finished request |
+| `start.py` | Builds and runs the `mlx.launch` command (JACCL backend, hostfile, shim, model options), prints the speed of each finished request, and when it is stopped stops the ranks on all the hosts |
 | `mlx_leak_shim_v2.py` | Default shim of `start.py`: starts `mlx_lm.server` with in-memory patches (Metal buffer leak, distributed stop, SSE keepalive during tool calls, byte limit of the prompt cache, model pinned to `--model`, `--kv-bits` on MLA models, rank configuration check at startup, MTP) |
 | `mlx_leak_shim.py` | Previous shim, without rank check and MTP: to go back, `-leak-patch ~/mlx-jaccl/mlx_leak_shim.py` |
 | `mlx_metrics_plugin.py` | `GET /v1/metrics`, loaded by both shims |
@@ -193,9 +193,9 @@ python mlx_leak_shim_v2.py --self-test
 Launch from Mac1 (rank 0). `start.py` passes absolute paths (by default `hosts.json` and `mlx_leak_shim_v2.py` next to it), so the repository must be at the same path on both Macs, and the two ranks check at startup that they run the same shim, plugin, versions and variables:
 
 ```
-./start.py Qwen3.8-27B -8bit -host 0.0.0.0
+./start.py -8bit -host 0.0.0.0
 Server start: model=mlx-community/Qwen3.8-27B-8bit, port=8080, thinking=true
-[INFO] Running /Volumes/Home/Alvise/miniforge3/envs/mlx/bin/python /Volumes/Home/Alvise/mlx-jaccl/mlx_leak_shim_v2.py --model mlx-community/Qwen3.8-27B-8bit --host 0.0.0.0 --port 8080 --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 --max-tokens 262144 --log-level INFO --prompt-cache-bytes 0G --prefill-step-size 256 --chat-template-args '{"enable_thinking": true, "reasoning_effort": "medium"}' --kv-bits 8
+[INFO] Running /Volumes/Home/Alvise/miniforge3/envs/mlx/bin/python -X mlx_jaccl_tag=5675b25b35b6 /Volumes/Home/Alvise/mlx-jaccl/mlx_leak_shim_v2.py --model mlx-community/Qwen3.8-27B-8bit --host 0.0.0.0 --port 8080 --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 --max-tokens 262144 --log-level INFO --prompt-cache-bytes 0G --prefill-step-size 256 --chat-template-args '{"enable_thinking": true, "reasoning_effort": "medium"}' --kv-bits 8
 [leak-shim] rank=0 patch MTP applicata (mlx-lm 0.32.2, blocco della testa)
 [leak-shim] rank=0 configurazione identica su 2 rank
 [leak-shim] rank=0 MTP attivo: mlx-community/Qwen3.8-27B-MTP-8bit, 2 bozze per verifica
@@ -205,6 +205,15 @@ Server start: model=mlx-community/Qwen3.8-27B-8bit, port=8080, thinking=true
 ```
 
 `./start.py -h` lists all the options. The `[tps]` line comes from `start.py` itself, which reads `/v1/metrics` on this machine every 3 seconds (`-tps-every SECONDS`, 0 switches it off) and prints the last finished request; requests finished within the same interval show only the last one (`N more not shown`), the average includes all of them.
+
+Stopping: `start.py` stays alive as long as the server (its pid is the one to save, e.g. `nohup ./start.py … & echo $! > mlx-jaccl.pid`) and stops the whole cluster when it gets Ctrl-C, `kill`, or the closing of its terminal (unless started with `nohup`):
+
+```
+[start] SIGTERM received: stopping the ranks
+[start] no rank left on 192.168.20.1, 192.168.20.2
+```
+
+It closes `mlx.launch` with its ssh connections, so every rank gets a hangup and exits; then it checks every host of the hostfile and kills (`kill -9`) the ranks of this launch still alive after 5 seconds. Each launch marks its ranks with `-X mlx_jaccl_tag=…`, so the stop touches no other process. After a `kill -9` of `start.py`, a companion process (the same one that prints `[tps]`) notices within a second and stops the cluster (`start.py ended without stopping the cluster: stopping it`). At startup `start.py` checks the hosts and refuses to start while a rank is already there (a server already running, or one left by an earlier launch), printing the `kill` to run.
 
 MTP (multi-token prediction): the shim looks for the MTP head of the model only in the local Hugging Face cache, it never downloads it. Download it once on both Macs:
 
@@ -314,7 +323,7 @@ More GPU memory, on both Macs (does not persist across reboots; 30000 MB leaves 
 sudo sysctl iogpu.wired_limit_mb=30000
 ```
 
-Processes left running after a crash, to clean up before relaunching:
+Processes left running after a crash, to clean up before relaunching (`start.py` refuses to start while they exist, and prints the exact `kill` to run):
 
 ```bash
 pkill -f mlx_leak_shim; ssh 192.168.20.2 'pkill -f mlx_leak_shim'
@@ -329,6 +338,8 @@ pkill -f mlx_leak_shim; ssh 192.168.20.2 'pkill -f mlx_leak_shim'
 | `errno 22` (RTR) or `errno 60` at startup | Wrong RDMA GID selection over Thunderbolt (known bug, PR mlx #3468) | Update mlx on both nodes |
 | Hang with long prompts, no errors | Multi-block prefill in TP (reported on large models) | `--prefill-step-size` ≥ prompt length |
 | Hang with `--temp > 0` | Ranks sampling different tokens | `mlx_lm.server` already syncs the random seed across ranks at startup; with MTP the shim also takes drafts and sampled tokens from rank 0 |
+| `[jaccl] Changing queue pair to RTR failed with errno 14` on one rank and `Recv failed with errno=2` on the other, at startup | A rank of an earlier launch still running on a host keeps the RDMA devices busy (left by `mlx.launch` killed without stopping its ranks, which the `start.py` before the supervisor allowed) | Stop it with the command above, then relaunch |
+| `Error: mlx_lm.server is already running, or left over …` from `start.py` | The check at startup found a rank on a host | Run the `kill` printed by `start.py`, or stop the other `start.py` |
 | Server stops at startup with `DIVERSO fra i rank: …` | Different shim, plugin, mlx/mlx-lm versions, arguments or `MLX_*_SHIM*` variables between the two Macs | Same files and versions on both Macs, variables through `--env` in `start.py` (section 3.1) |
 | Server stops at startup with `… NON applicata (STRICT: esco)` | The installed mlx-lm differs from the one the patches expect | Section 3.1 |
 | Error `-12` in Send/Recv, `ibv_devinfo` hanging | Inconsistent RDMA state (reported on a 4-node cluster) | Reboot both Macs |

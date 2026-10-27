@@ -100,7 +100,8 @@ The patches in `mlx_leak_shim_v2.py` and the `/v1/metrics` plugin (`mlx_metrics_
 
 - if it differs, the log says `… diverso da quello atteso, patch … NON applicata`; with `MLX_LEAK_SHIM_STRICT=1` (always set by `start.py`) the line ends with `(STRICT: esco)` and the server does not start (exit 2);
 - if the metrics plugin can't hook in, the server starts without `/v1/metrics` and `start.py` prints no `[tps]` lines;
-- if the two Macs have different versions, the shim stops at startup with `DIVERSO fra i rank: mlx-lm: rank0=…, rank1=…`.
+- if the two Macs have different versions, the shim stops at startup with `DIVERSO fra i rank: mlx-lm: rank0=…, rank1=…`;
+- if `mlx.launch` (mlx 0.32.4) has changed, `start.py` prints `[start] mlx.launch not patched, …` and starts anyway, with Mac1 at 1-2 busy CPU cores (`mlx_launch_shim.py`, section 6).
 
 Most fragile are the distributed stop and the MTP patches, which replace exact code blocks; the metrics plugin and the `[tps]` lines of `start.py` depend on the least. A release can also change behaviour without touching the checked code: the self-test is there for that.
 
@@ -131,7 +132,7 @@ Steps, on both Macs (`mlx` env active):
 
    Exit code 0 means all `PASS`, 1 at least one `FAIL`, 4 at least one `INCONCLUSIVO` and no `FAIL`.
 
-4. Start the server (section 6) and check the log: one `patch … applicata` line per patch on each rank, `configurazione identica su 2 rank`, `MTP attivo: …` and `/v1/metrics attivo`.
+4. Start the server (section 6) and check the log: one `patch … applicata` line per patch on each rank, `configurazione identica su 2 rank`, `MTP attivo: …` and `/v1/metrics attivo`, and no `mlx.launch not patched` line.
 
 5. To go back to the verified versions:
 
@@ -179,6 +180,7 @@ cd mlx-jaccl
 | `start.py` | Builds and runs the `mlx.launch` command (JACCL backend, hostfile, shim, model options), prints the speed of each finished request, and when it is stopped stops the ranks on all the hosts |
 | `mlx_leak_shim_v2.py` | Default shim of `start.py`: starts `mlx_lm.server` with in-memory patches (Metal buffer leak, distributed stop, SSE keepalive during tool calls, byte limit of the prompt cache, model pinned to `--model`, `--kv-bits` on MLA models, rank configuration check at startup, MTP) |
 | `mlx_leak_shim.py` | Previous shim, without rank check and MTP: to go back, `-leak-patch ~/mlx-jaccl/mlx_leak_shim.py` |
+| `mlx_launch_shim.py` | Runs `mlx.launch` for `start.py` without its busy loop (in-memory patch: ~0% CPU on Mac1 instead of ~130%) |
 | `mlx_metrics_plugin.py` | `GET /v1/metrics`, loaded by both shims |
 | `hosts.json` | `mlx.launch` hostfile |
 | `active-request.sh` | Live view of the running request |
@@ -214,6 +216,8 @@ Stopping: `start.py` stays alive as long as the server (its pid is the one to sa
 ```
 
 It closes `mlx.launch` with its ssh connections, so every rank gets a hangup and exits; then it checks every host of the hostfile and kills (`kill -9`) the ranks of this launch still alive after 5 seconds. Each launch marks its ranks with `-X mlx_jaccl_tag=…`, so the stop touches no other process. After a `kill -9` of `start.py`, a companion process (the same one that prints `[tps]`) notices within a second and stops the cluster (`start.py ended without stopping the cluster: stopping it`). At startup `start.py` checks the hosts and refuses to start while a rank is already there (a server already running, or one left by an earlier launch), printing the `kill` to run.
+
+CPU of `mlx.launch`: in mlx 0.32.4, `mlx.launch` forwards its stdin to the ranks in a loop that never waits, which keeps Mac1 at ~130% CPU for as long as the server runs. `start.py` never writes to that stdin, so it runs `mlx.launch` through `mlx_launch_shim.py`, which removes the loop in memory (~0% CPU, no installed file modified); in `ps` the process is `python -P …/mlx_launch_shim.py …/mlx.launch …`. If a new mlx has changed that code, the log says `[start] mlx.launch not patched, it can keep 1-2 CPU cores busy: …` and the unchanged `mlx.launch` runs: the server works as before.
 
 MTP (multi-token prediction): the shim looks for the MTP head of the model only in the local Hugging Face cache, it never downloads it. Download it once on both Macs:
 

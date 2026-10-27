@@ -26,6 +26,8 @@ TAG_OPTION = "mlx_jaccl_tag"
 # Any rank started by start.py, also by an older launch; the bracket keeps
 # pgrep from matching the shell that runs it
 RANK_PATTERN = "[m]lx_leak_shim[^ /]*[.]py --model "
+# Runs mlx.launch without the busy loop that keeps Mac1 at ~130% CPU
+LAUNCH_SHIM = SCRIPT_DIR / "mlx_launch_shim.py"
 
 
 def die(msg):
@@ -128,7 +130,9 @@ def build_command(args, tag):
         "--chat-template-args", chat_template_args,
         "--kv-bits", "8",
     ]
+    # -P: the folder of the shim stays out of sys.path
     return [
+        str(PYTHON_BIN), "-P", str(LAUNCH_SHIM),
         str(MLX_LAUNCH), "--verbose", "--backend", "jaccl", "--hostfile", args.hostfile,
         "--env", "MLX_METAL_FAST_SYNCH=0", "--env", "HF_HUB_OFFLINE=0",
         "--env", f"MLX_LEAK_SHIM={os.environ.get('MLX_LEAK_SHIM') or '1'}",
@@ -293,8 +297,9 @@ def main(argv=None):
     args = parse_args(argv)
     if not Path(args.hostfile).is_file():
         die(f"hostfile not found: {args.hostfile}")
-    if not Path(args.leak_patch).is_file():
-        die(f"shim not found: {args.leak_patch}")
+    for shim in (args.leak_patch, LAUNCH_SHIM):
+        if not Path(shim).is_file():
+            die(f"shim not found: {shim}")
     for exe in (PYTHON_BIN, MLX_LAUNCH):
         if not os.access(exe, os.X_OK):
             die(f"not found or not executable: {exe}")

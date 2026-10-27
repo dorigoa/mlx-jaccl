@@ -177,8 +177,8 @@ cd mlx-jaccl
 | File | Purpose |
 | --- | --- |
 | `start.py` | Builds and runs the `mlx.launch` command (JACCL backend, hostfile, shim, model options) and prints the speed of each finished request |
-| `mlx_leak_shim_v2.py` | Starts `mlx_lm.server` with in-memory patches: Metal buffer leak, distributed stop, SSE keepalive during tool calls, byte limit of the prompt cache, model pinned to `--model`, `--kv-bits` on MLA models, rank configuration check at startup, MTP |
-| `mlx_leak_shim.py` | Previous shim, without rank check and MTP (to go back) |
+| `mlx_leak_shim_v2.py` | Default shim of `start.py`: starts `mlx_lm.server` with in-memory patches (Metal buffer leak, distributed stop, SSE keepalive during tool calls, byte limit of the prompt cache, model pinned to `--model`, `--kv-bits` on MLA models, rank configuration check at startup, MTP) |
+| `mlx_leak_shim.py` | Previous shim, without rank check and MTP: to go back, `-leak-patch ~/mlx-jaccl/mlx_leak_shim.py` |
 | `mlx_metrics_plugin.py` | `GET /v1/metrics`, loaded by both shims |
 | `hosts.json` | `mlx.launch` hostfile |
 | `active-request.sh` | Live view of the running request |
@@ -190,10 +190,10 @@ conda activate mlx # if not already done
 python mlx_leak_shim_v2.py --self-test
 ```
 
-Launch from Mac1 (rank 0). `start.py` passes absolute paths (by default `hosts.json` and the shim next to it), so the repository must be at the same path on both Macs, and the two ranks check at startup that they run the same shim, plugin, versions and variables:
+Launch from Mac1 (rank 0). `start.py` passes absolute paths (by default `hosts.json` and `mlx_leak_shim_v2.py` next to it), so the repository must be at the same path on both Macs, and the two ranks check at startup that they run the same shim, plugin, versions and variables:
 
 ```
-./start.py Qwen3.8-27B -8bit -host 0.0.0.0 -leak-patch ~/mlx-jaccl/mlx_leak_shim_v2.py
+./start.py Qwen3.8-27B -8bit -host 0.0.0.0
 Server start: model=mlx-community/Qwen3.8-27B-8bit, port=8080, thinking=true
 [INFO] Running /Volumes/Home/Alvise/miniforge3/envs/mlx/bin/python /Volumes/Home/Alvise/mlx-jaccl/mlx_leak_shim_v2.py --model mlx-community/Qwen3.8-27B-8bit --host 0.0.0.0 --port 8080 --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 --max-tokens 262144 --log-level INFO --prompt-cache-bytes 0G --prefill-step-size 256 --chat-template-args '{"enable_thinking": true, "reasoning_effort": "medium"}' --kv-bits 8
 [leak-shim] rank=0 patch MTP applicata (mlx-lm 0.32.2, blocco della testa)

@@ -51,7 +51,7 @@ def seconds(value):
 
 def parse_args(argv):
     parser = argparse.ArgumentParser(
-        description="Start mlx_lm.server on the jaccl cluster (through mlx_leak_shim.py).",
+        description="Start mlx_lm.server on the jaccl cluster (through mlx_leak_shim_v2.py).",
         allow_abbrev=False,
     )
     parser.add_argument("model", choices=MODELS, help="model to serve")
@@ -69,7 +69,7 @@ def parse_args(argv):
                         help="max number of tokens generated per request (default: %(default)s)")
     parser.add_argument("-hostfile", default=str(SCRIPT_DIR / "hosts.json"),
                         help="hostfile of the mlx cluster (default: %(default)s)")
-    parser.add_argument("-leak-patch", default=str(SCRIPT_DIR / "mlx_leak_shim.py"),
+    parser.add_argument("-leak-patch", default=str(SCRIPT_DIR / "mlx_leak_shim_v2.py"),
                         help="shim with the mlx-lm patches (default: %(default)s)")
     parser.add_argument("-temp", type=number, default="1.0",
                         help="sampling temperature (default: %(default)s)")

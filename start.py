@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 
 import argparse
+import http.client
 import json
 import os
 import re
 import shlex
 import sys
+import time
 from pathlib import Path
 
 
@@ -40,6 +42,13 @@ def gbytes(value):
     return value
 
 
+def seconds(value):
+    try:
+        return max(float(value), 0.0)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a number of seconds: {value!r}") from None
+
+
 def parse_args(argv):
     parser = argparse.ArgumentParser(
         description="Start mlx_lm.server on the jaccl cluster (through mlx_leak_shim.py).",
@@ -68,6 +77,10 @@ def parse_args(argv):
                         help="sampling top-p (default: %(default)s)")
     parser.add_argument("-cache-gbytes", type=gbytes,
                         help="prompt cache size in GB (default: 0 for Qwen, 4.5 otherwise)")
+    parser.add_argument("-tps-every", type=seconds, default=3.0,
+                        help="poll /v1/metrics on this machine every SECONDS and print the "
+                             "generation speed of each finished request (0: off; "
+                             "default: %(default)s)")
     parser.add_argument("-debug", action="store_true", help="show debug messages")
     parser.add_argument("-dry-run", action="store_true",
                         help="print the mlx.launch command instead of running it")
@@ -108,6 +121,64 @@ def build_command(args):
     ]
 
 
+def report_tps(host, port, pid, every):
+    """Every `every` seconds read /v1/metrics (mlx_metrics_plugin.py) and, when
+    last_request changes, print its generation_tps; stop when `pid` exits.
+    Requests finished within the same interval show only the last one."""
+    last, finished = None, 0
+    alive = True
+    while alive:
+        time.sleep(every)
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            alive = False  # one last read, then stop
+        except PermissionError:
+            pass
+        try:
+            conn = http.client.HTTPConnection(host, port, timeout=5)
+            conn.request("GET", "/v1/metrics")
+            metrics = json.loads(conn.getresponse().read())
+            conn.close()
+        except (OSError, ValueError, http.client.HTTPException):
+            continue  # model still loading, server down, or no metrics plugin
+        request = metrics.get("last_request")
+        if not request or request == last:
+            continue
+        counts = metrics.get("requests") or {}
+        done = sum(counts.get(k, 0) for k in ("completed", "cancelled", "failed"))
+        skipped = f", {done - finished - 1} more not shown" if done - finished > 1 else ""
+        last, finished = request, done
+        average = (metrics.get("totals") or {}).get("generation_tps", 0.0)
+        print(f"[tps] {time.strftime('%H:%M:%S')} last request: "
+              f"{request['generation_tps']:.1f} tok/s ({request['generation_tokens']} tokens "
+              f"in {request['generation_time']:.1f}s, {request['finish_reason']}), "
+              f"prefill {request['prefill_tps']:.1f} tok/s ({request['prefill_tokens']} tokens), "
+              f"average since start {average:.1f} tok/s{skipped}", flush=True)
+
+
+def start_tps_reporter(host, port, every):
+    """Run report_tps in a detached grandchild that writes to this console.
+    This process then becomes mlx.launch through execve, keeping its pid (and
+    any pid file), so the reporter watches that pid and exits with it."""
+    pid = os.getpid()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    child = os.fork()
+    if child:
+        os.waitpid(child, 0)
+        return
+    try:
+        # New session: Ctrl-C on the console reaches mlx.launch, not the reporter
+        os.setsid()
+        if os.fork() == 0:
+            report_tps(host, port, pid, every)
+    except Exception as e:
+        print(f"[tps] reporter stopped: {e}", file=sys.stderr, flush=True)
+    finally:
+        os._exit(0)
+
+
 def main(argv=None):
     args = parse_args(argv)
     if not Path(args.hostfile).is_file():
@@ -126,6 +197,10 @@ def main(argv=None):
     thinking = "false" if args.nothink else "true"
     print(f"Server start: model={model_id(args)}, port={args.port}, thinking={thinking}",
           file=sys.stderr)
+    if args.tps_every > 0:
+        # The HTTP server runs on rank 0, i.e. this machine
+        host = "127.0.0.1" if args.host in ("0.0.0.0", "::", "") else args.host
+        start_tps_reporter(host, args.port, args.tps_every)
     env = dict(os.environ, PATH=f"{ENV_BIN}{os.pathsep}{os.environ.get('PATH', '')}")
     os.execve(cmd[0], cmd, env)
 

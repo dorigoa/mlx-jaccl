@@ -12,7 +12,9 @@ Si avvolgono (functools.wraps) tre punti di mlx_lm.server:
       (progress_callback), un token per Response, finish_reason, errori e
       richieste abbandonate dal client.
   APIHandler.do_GET
-      risponde a /v1/metrics, il resto va all'originale.
+      risponde a /v1/metrics senza la riga di access log (il polling di
+      start.py -tps-every e dei watch riempirebbe la console), il resto va
+      all'originale.
   BatchGenerator.__init__ / close (facoltativo)
       contatori del batch (attributo privato _counters). Se mancano, nel JSON
       la sezione "batch" resta a zero; il resto funziona.
@@ -383,6 +385,8 @@ def _wrap_do_get(orig):
     @functools.wraps(orig)
     def do_GET(self):
         if self.path.split("?")[0] == "/v1/metrics":
+            # Polling di monitoraggio: nessuna riga di access log
+            self.log_request = lambda *args: None
             return handle_metrics_request(self)
         return orig(self)
 

@@ -98,9 +98,9 @@ Expected: `0.32.4 0.32.2` (or similar numbers) and the path `$HOME/miniforge3/en
 
 The patches in `mlx_leak_shim_v2.py` and the `/v1/metrics` plugin (`mlx_metrics_plugin.py`) don't modify any file of mlx or mlx-lm: they are applied in memory at every server start. They do hook into internals of mlx-lm 0.32.2 (private methods, signatures, exact code blocks), which a new release can change. Before applying a patch, the shim compares the installed code with the expected one:
 
-- if it differs, the log says `… diverso da quello atteso, patch … NON applicata`; with `MLX_LEAK_SHIM_STRICT=1` (always set by `start.py`) the line ends with `(STRICT: esco)` and the server does not start (exit 2);
+- if it differs, the log says `… differs from the expected one, … patch NOT applied`; with `MLX_LEAK_SHIM_STRICT=1` (always set by `start.py`) the line ends with `(STRICT: exiting)` and the server does not start (exit 2);
 - if the metrics plugin can't hook in, the server starts without `/v1/metrics` and `start.py` prints no `[tps]` lines;
-- if the two Macs have different versions, the shim stops at startup with `DIVERSO fra i rank: mlx-lm: rank0=…, rank1=…`;
+- if the two Macs have different versions, the shim stops at startup with `DIFFERENT between the ranks: mlx-lm: rank0=…, rank1=…`;
 - if `mlx.launch` (mlx 0.32.4) has changed, `start.py` prints `[start] mlx.launch not patched, …` and starts anyway, with Mac1 at 1-2 busy CPU cores (`mlx_launch_shim.py`, section 6).
 
 Most fragile are the distributed stop and the MTP patches, which replace exact code blocks; the metrics plugin and the `[tps]` lines of `start.py` depend on the least. A release can also change behaviour without touching the checked code: the self-test is there for that.
@@ -127,12 +127,12 @@ Steps, on both Macs (`mlx` env active):
 
    For each patch it reproduces the problem without the patch and checks that the patch removes it:
    - `PASS`: the patch applies and is still needed;
-   - `INCONCLUSIVO`: the patch applies but the new mlx-lm no longer shows the problem, it was probably fixed upstream; the patch can be switched off;
+   - `INCONCLUSIVE`: the patch applies but the new mlx-lm no longer shows the problem, it was probably fixed upstream; the patch can be switched off;
    - `FAIL`: the patch no longer applies (or no longer works) and the shim must be adapted; meanwhile switch that patch off or go back to the previous versions.
 
-   Exit code 0 means all `PASS`, 1 at least one `FAIL`, 4 at least one `INCONCLUSIVO` and no `FAIL`.
+   Exit code 0 means all `PASS`, 1 at least one `FAIL`, 4 at least one `INCONCLUSIVE` and no `FAIL`.
 
-4. Start the server (section 6) and check the log: one `patch … applicata` line per patch on each rank, `configurazione identica su 2 rank`, `MTP attivo: …` and `/v1/metrics attivo`, and no `mlx.launch not patched` line.
+4. Start the server (section 6) and check the log: one `… patch applied` line per patch on each rank, `identical configuration on 2 ranks`, `MTP active: …` and `/v1/metrics active`, and no `mlx.launch not patched` line.
 
 5. To go back to the verified versions:
 
@@ -198,11 +198,11 @@ Launch from Mac1 (rank 0). `start.py` passes absolute paths (by default `hosts.j
 ./start.py -8bit -host 0.0.0.0
 Server start: model=mlx-community/Qwen3.8-27B-8bit, port=8080, thinking=true
 [INFO] Running /Volumes/Home/Alvise/miniforge3/envs/mlx/bin/python -X mlx_jaccl_tag=5675b25b35b6 /Volumes/Home/Alvise/mlx-jaccl/mlx_leak_shim_v2.py --model mlx-community/Qwen3.8-27B-8bit --host 0.0.0.0 --port 8080 --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 --max-tokens 262144 --log-level INFO --prompt-cache-bytes 0G --prefill-step-size 256 --chat-template-args '{"enable_thinking": true, "reasoning_effort": "medium"}' --kv-bits 8
-[leak-shim] rank=0 patch MTP applicata (mlx-lm 0.32.2, blocco della testa)
-[leak-shim] rank=0 configurazione identica su 2 rank
-[leak-shim] rank=0 MTP attivo: mlx-community/Qwen3.8-27B-MTP-8bit, 2 bozze per verifica
+[leak-shim] rank=0 MTP patch applied (mlx-lm 0.32.2, block size of the head)
+[leak-shim] rank=0 identical configuration on 2 ranks
+[leak-shim] rank=0 MTP active: mlx-community/Qwen3.8-27B-MTP-8bit, 2 drafts per verification
 ...
-[leak-shim] rank=0 MTP: 1109 token, 2.61 per verifica, bozze accettate 684/850
+[leak-shim] rank=0 MTP: 1109 tokens, 2.61 per verification, drafts accepted 684/850
 [tps] 17:07:23 last request: 34.6 tok/s (1109 tokens in 32.0s, stop), prefill 285.4 tok/s (153 tokens), average since start 34.6 tok/s
 ```
 
@@ -225,7 +225,7 @@ MTP (multi-token prediction): the shim looks for the MTP head of the model only 
 hf download mlx-community/Qwen3.8-27B-MTP-8bit
 ```
 
-Without it the log says `MTP non attivo: testa MTP … non presente in locale` and generation works as before. MTP needs `--kv-bits` (always set by `start.py`) and keeps the output identical in distribution to normal generation; in the `MTP:` line, `per verifica` is the number of tokens produced per model forward (at most 3 with 2 drafts).
+Without it the log says `MTP not active: MTP head … not present locally` and generation works as before. MTP needs `--kv-bits` (always set by `start.py`) and keeps the output identical in distribution to normal generation; in the `MTP:` line, `per verification` is the number of tokens produced per model forward (at most 3 with 2 drafts).
 
 Querying metrics (requests to `/v1/metrics` are not written to the server log, so polling doesn't fill the console):
 
@@ -344,8 +344,8 @@ pkill -f mlx_leak_shim; ssh 192.168.20.2 'pkill -f mlx_leak_shim'
 | Hang with `--temp > 0` | Ranks sampling different tokens | `mlx_lm.server` already syncs the random seed across ranks at startup; with MTP the shim also takes drafts and sampled tokens from rank 0 |
 | `[jaccl] Changing queue pair to RTR failed with errno 14` on one rank and `Recv failed with errno=2` on the other, at startup | A rank of an earlier launch still running on a host keeps the RDMA devices busy (left by `mlx.launch` killed without stopping its ranks, which the `start.py` before the supervisor allowed) | Stop it with the command above, then relaunch |
 | `Error: mlx_lm.server is already running, or left over …` from `start.py` | The check at startup found a rank on a host | Run the `kill` printed by `start.py`, or stop the other `start.py` |
-| Server stops at startup with `DIVERSO fra i rank: …` | Different shim, plugin, mlx/mlx-lm versions, arguments or `MLX_*_SHIM*` variables between the two Macs | Same files and versions on both Macs, variables through `--env` in `start.py` (section 3.1) |
-| Server stops at startup with `… NON applicata (STRICT: esco)` | The installed mlx-lm differs from the one the patches expect | Section 3.1 |
+| Server stops at startup with `DIFFERENT between the ranks: …` | Different shim, plugin, mlx/mlx-lm versions, arguments or `MLX_*_SHIM*` variables between the two Macs | Same files and versions on both Macs, variables through `--env` in `start.py` (section 3.1) |
+| Server stops at startup with `… NOT applied (STRICT: exiting)` | The installed mlx-lm differs from the one the patches expect | Section 3.1 |
 | Error `-12` in Send/Recv, `ibv_devinfo` hanging | Inconsistent RDMA state (reported on a 4-node cluster) | Reboot both Macs |
 | HF: "Invalid username or password" | Repo non-existent or gated | `curl` with token (section 4), check the name |
 | Out of memory | Weights + KV cache beyond the limit | `iogpu.wired_limit_mb`, `--kv-bits 8`, `--max-kv-size` |

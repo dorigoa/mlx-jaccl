@@ -184,6 +184,7 @@ cd mlx-jaccl
 | `mlx_metrics_plugin.py` | `GET /v1/metrics`, loaded by both shims |
 | `hosts.json` | `mlx.launch` hostfile |
 | `active-request.sh` | Live view of the running request |
+| `rdma-monitor.sh`, `rdma_monitor.d` | RDMA traffic and latency of the rank on this Mac (DTrace, needs `sudo`) |
 
 Self-test, especially after an update of mlx and mlx-lm (section 3.1):
 
@@ -255,6 +256,26 @@ Monitoring memory usage:
 ```
 watch -n 2 "curl -s http://localhost:8080/v1/metrics | jq '{cache_gb: (.prompt_cache.n_bytes/1e9), limite_gb: (.prompt_cache.max_bytes/1e9), ok: (.prompt_cache.n_bytes <= .prompt_cache.max_bytes), active_gb: (.memory.active/1e9)}'"
 ```
+
+Monitoring RDMA traffic and latency: macOS has no byte counters for the `rdma_enX` devices (`netstat` on `en3` sees only IP traffic), so `rdma-monitor.sh` traces with DTrace the collectives (`all_sum`, `all_gather`, …) of the rank running on this Mac, while the server works. Run it on either Mac while a request is in progress; it asks for the `sudo` password, prints one line per operation every second and the totals at the end (also after Ctrl-C):
+
+```bash
+./rdma-monitor.sh        # 60 s; ./rdma-monitor.sh 0 runs until Ctrl-C, -p PID picks the process
+```
+
+```
+   t(s)  op            calls/s      MB/s   avg us   max us
+   58.0  all_gather         33      13.7       85      238
+   58.0  all_sum          1432      43.2       21      227
+...
+Totals over 60.0 s
+op               calls         MB     MB/s   avg us   min us   max us
+all_gather        1983      820.7     13.7       91       37     1459
+all_sum          86218     2601.5     43.4       20        4     1005
+all                         3422.2     57.0
+```
+
+(Qwen3.8-27B-8bit with MTP generating at about 28 tok/s on Mac1, `rdma_en3`.) MB are the data passed to each operation, about what this rank sends to the other; latency is the time of the call, so it includes waiting for the other Mac. During generation the collectives take about 3% of the time: there the limit is the GPU, not the link. During prefill the operations are much larger (MB instead of KB). The tracing adds about 1 µs per call and changes nothing in the server's behaviour; when it ends the process is as before.
 ## 7. Compatible models and memory budget
 
 A model runs in TP only if its architecture (`model_type`) implements `shard()` in mlx-lm. The architectures supported by the installed version can be listed as follows:

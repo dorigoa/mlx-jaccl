@@ -29,17 +29,15 @@ RANK_PATTERN = "[m]lx_leak_shim[^ /]*[.]py --model "
 # Runs mlx.launch without the busy loop that keeps Mac1 at ~130% CPU
 LAUNCH_SHIM = SCRIPT_DIR / "mlx_launch_shim.py"
 # Sampling recommended for Qwen3.8-27B with thinking on (thinking mode) and off
-# (instruct mode): https://unsloth.ai/docs/models/qwen3.8
+# (instruct mode): https://unsloth.ai/docs/models/qwen3.8. mlx_lm.server has no
+# options for the two penalties: the shim takes them and gives them to the
+# requests that don't set them
 SAMPLING = {
     "on": {"temp": "1.0", "top-p": "0.95", "top-k": "20", "min-p": "0.0",
            "presence-penalty": "0.0", "repetition-penalty": "1.0"},
     "off": {"temp": "0.7", "top-p": "0.80", "top-k": "20", "min-p": "0.0",
             "presence-penalty": "1.5", "repetition-penalty": "1.0"},
 }
-# mlx_lm.server has no options for the penalties: the shim reads them from
-# these variables and gives them to the requests that don't set them
-PENALTY_ENV = {"presence-penalty": "MLX_PENALTY_SHIM_PRESENCE",
-               "repetition-penalty": "MLX_PENALTY_SHIM_REPETITION"}
 
 
 def die(msg):
@@ -120,16 +118,13 @@ def build_command(args, tag):
         "enable_thinking": args.reasoning == "on",
         "reasoning_effort": "xhigh" if args.xhigh else "medium",
     })
-    sampling = SAMPLING[args.reasoning]
-    options = [arg for name, value in sampling.items() if name not in PENALTY_ENV
-               for arg in (f"--{name}", value)]
-    penalties = [arg for name, var in PENALTY_ENV.items()
-                 for arg in ("--env", f"{var}={sampling[name]}")]
+    sampling = [arg for name, value in SAMPLING[args.reasoning].items()
+                for arg in (f"--{name}", value)]
     server_args = [
         args.leak_patch,
         "--model", model_id(args),
         "--host", str(args.host), "--port", str(args.port),
-        *options,
+        *sampling,
         "--max-tokens", str(args.max_tokens),
         "--log-level", "DEBUG" if args.debug else "INFO",
         "--prompt-cache-bytes", f"{cache}G",
@@ -143,7 +138,7 @@ def build_command(args, tag):
         str(MLX_LAUNCH), "--verbose", "--backend", "jaccl", "--hostfile", args.hostfile,
         "--env", "MLX_METAL_FAST_SYNCH=0", "--env", "HF_HUB_OFFLINE=0",
         "--env", f"MLX_LEAK_SHIM={os.environ.get('MLX_LEAK_SHIM') or '1'}",
-        "--env", "MLX_LEAK_SHIM_STRICT=1", *penalties,
+        "--env", "MLX_LEAK_SHIM_STRICT=1",
         "--", str(PYTHON_BIN), "-X", f"{TAG_OPTION}={tag}", *server_args,
     ]
 

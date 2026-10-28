@@ -44,7 +44,7 @@ expected output:
     (repetition, presence, logits processors): request without penalties (0.0, 0.0, 0), with 1.1/0.0 (1.1, 0.0, 1)
     IGNORED: the request without penalties has them off, not those of the server
 --- phase penalty-patched ---
-    [leak-shim] rank=? penalty patch applied (mlx-lm 0.32.2, server default: repetition_penalty 1, presence_penalty 1.5)
+    [leak-shim] rank=? penalty patch applied (mlx-lm 0.32.2, server default: repetition_penalty 1.0, presence_penalty 1.5)
     (repetition, presence, logits processors): request without penalties (0.0, 1.5, 1), with 1.1/0.0 (1.1, 0.0, 1)
     OK: server penalties for the request without them, the client's values win
 --- phase kvbits-unpatched ---
@@ -221,10 +221,11 @@ come only from the request (do_POST: self.body.get(..., 0.0), i.e. off), so
 the server cannot apply the values recommended for a model (Qwen3.8 instruct
 mode: presence_penalty 1.5) to clients that do not send them.
 
-Fix: before do_POST validates the request, the requests that do not set the
-field get MLX_PENALTY_SHIM_REPETITION and MLX_PENALTY_SHIM_PRESENCE (set by
-start.py on all the ranks, from --reasoning); the values sent by the client
-win. repetition_penalty 1.0 leaves the logits unchanged and becomes
+Fix: the shim takes --repetition-penalty X and --presence-penalty Y (passed
+by start.py next to --temp, --top-p, ..., from --reasoning) out of the
+arguments of mlx_lm.server and, before do_POST validates the request, gives
+those values to the requests that do not set the field; the values sent by
+the client win. repetition_penalty 1.0 leaves the logits unchanged and becomes
 0.0 (off), so that no logits processor runs for nothing (with MTP it is
 applied to every row of each verification). The request arguments are built
 on rank 0 and shared with the other ranks as before.
@@ -241,7 +242,7 @@ If mlx_lm.server.main is missing the server does not start: re-running the
 module with runpy would create new classes, without any of the patches.
 
 Usage:
-  python mlx_leak_shim_v2.py [mlx_lm.server arguments]
+  python mlx_leak_shim_v2.py [mlx_lm.server arguments] [--repetition-penalty X] [--presence-penalty Y]
   python mlx_leak_shim_v2.py --self-test
 Environment variables:
   MLX_LEAK_SHIM=0              does not apply the leak patch (for A/B comparisons)
@@ -256,9 +257,7 @@ Environment variables:
   MLX_MTP_SHIM=0               does not use the MTP head
   MLX_MTP_SHIM_MODEL=repo|dir  MTP head to use instead of the one derived from --model
   MLX_MTP_SHIM_BLOCK=n         tokens per verification, last + n-1 drafts (default: block_size of the head, 3)
-  MLX_PENALTY_SHIM_REPETITION=x  repetition_penalty of the requests that do not set it (default: off)
-  MLX_PENALTY_SHIM_PRESENCE=x  presence_penalty of the requests that do not set it (default: off)
-  MLX_PENALTY_SHIM=0           ignores the two variables above (back to the original behavior)
+  MLX_PENALTY_SHIM=0           ignores --repetition-penalty/--presence-penalty (requests without them: off)
   MLX_LEAK_SHIM_STRICT=1       exits with an error if the installed code is not the expected one
 """
 
@@ -281,8 +280,7 @@ TAG = "[leak-shim]"
 SHIM_ENV = ("MLX_LEAK_SHIM", "MLX_LEAK_SHIM_STRICT", "MLX_STOP_SHIM", "MLX_STOP_SHIM_EVERY",
             "MLX_KEEPALIVE_SHIM", "MLX_KEEPALIVE_SHIM_EVERY", "MLX_CACHE_SHIM", "MLX_PIN_SHIM",
             "MLX_KVBITS_SHIM", "MLX_METRICS_PLUGIN", "MLX_MTP_SHIM", "MLX_MTP_SHIM_MODEL",
-            "MLX_MTP_SHIM_BLOCK", "MLX_PENALTY_SHIM", "MLX_PENALTY_SHIM_REPETITION",
-            "MLX_PENALTY_SHIM_PRESENCE")
+            "MLX_MTP_SHIM_BLOCK", "MLX_PENALTY_SHIM")
 EXPECTED = ("self.lengths -= N", "self.left_padding -= N")
 
 # Block of ResponseGenerator._serve_single replaced by the stop patch
@@ -644,27 +642,40 @@ def apply_pin_patch():
     return True
 
 
-# Variables with the server default of the penalties that mlx_lm.server
+# Shim options with the server default of the penalties that mlx_lm.server
 # reads only from the request, with this line of do_POST
-PENALTY_ENV = {"MLX_PENALTY_SHIM_REPETITION": "repetition_penalty",
-               "MLX_PENALTY_SHIM_PRESENCE": "presence_penalty"}
+PENALTY_OPTIONS = {"--repetition-penalty": "repetition_penalty",
+                   "--presence-penalty": "presence_penalty"}
 PENALTY_GET = 'self.{0} = self.body.get("{0}", 0.0)'
 
 
-def apply_penalty_patch():
+def _penalty_options(args):
+    """Takes the PENALTY_OPTIONS out of the arguments of mlx_lm.server, which
+    does not have them: (other arguments, {field: value}), or (None, ...)
+    if a value is not a number."""
+    rest, defaults = [], {}
+    it = iter(args)
+    for arg in it:
+        name, eq, value = arg.partition("=")
+        if name not in PENALTY_OPTIONS:
+            rest.append(arg)
+            continue
+        if not eq:
+            value = next(it, None)
+        try:
+            defaults[PENALTY_OPTIONS[name]] = float(value)
+        except (TypeError, ValueError):
+            _log(f"{name} {value!r}: not a number, the server does NOT start")
+            return None, defaults
+    return rest, defaults
+
+
+def apply_penalty_patch(defaults):
     """Server default of the penalties for the requests that do not set them."""
     if os.environ.get("MLX_PENALTY_SHIM", "1") == "0":
-        _log("MLX_PENALTY_SHIM=0: penalty patch NOT applied")
+        _log("MLX_PENALTY_SHIM=0: penalty patch NOT applied"
+             + (", --repetition-penalty/--presence-penalty ignored" if defaults else ""))
         return False
-
-    defaults = {}
-    for var, field in PENALTY_ENV.items():
-        value = os.environ.get(var)
-        if value:
-            try:
-                defaults[field] = float(value)
-            except ValueError:
-                _log(f"{var}={value!r} not a number: {field} off")
 
     import mlx_lm
     from mlx_lm import server
@@ -680,7 +691,7 @@ def apply_penalty_patch():
         src = ""
     validate = src.find("self.validate_model_parameters()")
     if validate < 0 or not all(0 <= src.find(PENALTY_GET.format(field)) < validate
-                               for field in PENALTY_ENV.values()):
+                               for field in PENALTY_OPTIONS.values()):
         return _mismatch(f"mlx-lm {version}: APIHandler.do_POST differs from the expected one, "
                          "penalty patch NOT applied")
 
@@ -700,7 +711,8 @@ def apply_penalty_patch():
     validate_model_parameters._shim = "penalty"
     handler.validate_model_parameters = validate_model_parameters
     _log(f"penalty patch applied (mlx-lm {version}, server default: "
-         + (", ".join(f"{field} {value:g}" for field, value in defaults.items()) or "none")
+         + (", ".join(f"{field} {defaults[field]}" for field in PENALTY_OPTIONS.values()
+                      if field in defaults) or "none")
          + ")")
     return True
 
@@ -1618,11 +1630,16 @@ def _pin_phase(patched):
     return 0
 
 
+# Server started as by start.py --reasoning off
+PENALTY_ARGS = ["--model", "m", "--top-k", "20", "--presence-penalty", "1.5",
+                "--repetition-penalty=1.0", "--max-tokens", "16"]
+
+
 def _penalty_phase(patched):
-    """Real do_POST on a handler without socket, server started as by
-    start.py --reasoning off: a request without penalties must get those of
-    the server, with repetition 1.0 off (no logits processor), and one with
-    its own penalties must keep them."""
+    """Real do_POST on a handler without socket, server started with
+    PENALTY_ARGS: a request without penalties must get those of the server,
+    with repetition 1.0 off (no logits processor), and one with its own
+    penalties must keep them."""
     import io
     from types import SimpleNamespace as NS
     from mlx_lm import server
@@ -1633,8 +1650,11 @@ def _penalty_phase(patched):
         (self.repetition_penalty, self.presence_penalty, len(make_logits_processors(
             None, self.repetition_penalty, 20, self.presence_penalty, 20))))
 
-    os.environ.update(MLX_PENALTY_SHIM_REPETITION="1.0", MLX_PENALTY_SHIM_PRESENCE="1.5")
-    if patched and not apply_penalty_patch():
+    rest, defaults = _penalty_options(PENALTY_ARGS)
+    if rest != ["--model", "m", "--top-k", "20", "--max-tokens", "16"]:
+        print(f"arguments left for mlx_lm.server: {rest}")
+        return 1
+    if patched and not apply_penalty_patch(defaults):
         print("patch not applicable")
         return 1
 
@@ -2057,6 +2077,9 @@ def main():
             return _mtp_phase(args[1] == "mtp-patched")
         return _phase(args[1] == "patched")
 
+    server_args, penalties = _penalty_options(args)
+    if server_args is None:
+        return 2
     # The patches change the collectives: the ranks must have the same shim
     _log(f"shim sha256 {_file_sha(os.path.abspath(__file__))}")
     applied = {
@@ -2065,7 +2088,7 @@ def main():
         "keepalive": apply_keepalive_patch(),
         "cache": apply_cache_bytes_patch(),
         "pin": apply_pin_patch(),
-        "penalty": apply_penalty_patch(),
+        "penalty": apply_penalty_patch(penalties),
         "kvbits": apply_kvbits_patch(),
         "mtp": apply_mtp_patch(),
         "metrics": apply_metrics_plugin(),
@@ -2073,7 +2096,7 @@ def main():
     if not _check_ranks(_rank_config(applied, args)):
         _log("shim or configuration differs between the ranks: the server does NOT start")
         return 3
-    sys.argv = ["mlx_lm.server"] + args
+    sys.argv = ["mlx_lm.server"] + server_args
     try:
         from mlx_lm.server import main as server_main
     except ImportError as e:

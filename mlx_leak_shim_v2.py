@@ -9,28 +9,28 @@ expected output:
     CRASH allo step 10395: [metal::malloc] Resource limit (499000) exceeded.
 --- fase patched ---
     OK: 12000 step x 48 layer, valori corretti
-    [leak-shim] rank=? patch applicata (mlx-lm 0.32.2)
+    [leak-shim] rank=? patch applied (mlx-lm 0.32.2)
 --- fase stop-unpatched ---
     token generati rank0=5 rank1=200, collettive stop rank0=0 rank1=0, errori=['NotImplementedError', None]
     DESYNC: i rank escono da punti diversi
 --- fase stop-patched ---
     token generati rank0=9 rank1=9, collettive stop rank0=2 rank1=2, errori=[None, None]
     OK: entrambi i rank fermi al token 9
-    [leak-shim] rank=? patch stop applicata (mlx-lm 0.32.2, sync ogni 8 token)
+    [leak-shim] rank=? patch stop applied (mlx-lm 0.32.2, sync ogni 8 token)
 --- fase keepalive-unpatched ---
     token letti 106/106, keepalive prima della disconnessione 0, BrokenPipe=True, stop=True
     SILENZIO: disconnessione rilevata solo a generazione finita
 --- fase keepalive-patched ---
     token letti 19/106, keepalive prima della disconnessione 2, BrokenPipe=True, stop=True
     OK: disconnessione rilevata 4 token dopo
-    [leak-shim] rank=? patch keepalive applicata (mlx-lm 0.32.2, dopo 0.05s di silenzio)
+    [leak-shim] rank=? patch keepalive applied (mlx-lm 0.32.2, dopo 0.05s di silenzio)
 --- fase cache-unpatched ---
     prompt cache: 10 sequenze, 10.73 GB (limite 4.83 GB)
     SFORA: il limite in byte non viene applicato
 --- fase cache-patched ---
     prompt cache: 4 sequenze, 4.29 GB (limite 4.83 GB)
     OK: limite rispettato
-    [leak-shim] rank=? patch limite cache applicata (mlx-lm 0.32.2)
+    [leak-shim] rank=? patch limite cache applied (mlx-lm 0.32.2)
     [leak-shim] rank=? prompt cache limitata a 4.83 GB
 --- fase pin-unpatched ---
     /v1/models: ['mlx-community/GLM-4.7-Flash-8bit', 'mlx-community/Qwen3.8-27B-4bit', 'mlx-community/Qwen3.8-27B-8bit']; richiesta per mlx-community/GLM-4.7-Flash-8bit servita con mlx-community/GLM-4.7-Flash-8bit
@@ -38,14 +38,14 @@ expected output:
 --- fase pin-patched ---
     /v1/models: ['mlx-community/Qwen3.8-27B-4bit']; richiesta per mlx-community/GLM-4.7-Flash-8bit servita con mlx-community/Qwen3.8-27B-4bit
     OK: il client vede e usa solo il modello di avvio
-    [leak-shim] rank=? patch modello bloccato applicata (mlx-lm 0.32.2)
+    [leak-shim] rank=? patch modello bloccato applied (mlx-lm 0.32.2)
     [leak-shim] rank=? richiesto il modello 'mlx-community/GLM-4.7-Flash-8bit': servito con 'mlx-community/Qwen3.8-27B-4bit'
 --- fase kvbits-unpatched ---
     CRASH di glm4_moe_lite con --kv-bits: 'list' object has no attribute 'swapaxes'
 --- fase kvbits-patched ---
     cache dopo la generazione: {'glm4_moe_lite': ['KVCache'], 'llama': ['QuantizedKVCache']}
     OK: GLM genera a precisione piena, Llama resta quantizzato
-    [leak-shim] rank=? patch kv-bits applicata (mlx-lm 0.32.2)
+    [leak-shim] rank=? patch kv-bits applied (mlx-lm 0.32.2)
     [leak-shim] rank=? glm4_moe_lite: attenzione MLA, la cache KV resta a precisione piena (--kv-bits ignorato)
 --- fase metrics-unpatched ---
     GET /v1/metrics: HTTP 404
@@ -68,7 +68,7 @@ expected output:
 --- fase mtp-patched ---
     forward del modello per token: 1.00 senza MTP, 0.98 con la testa casuale, 0.42 con bozze giuste a 35/51 verifiche (accettate per verifica {0: 16, 1: 1, 2: 34})
     OK: token identici al generate_step originale (greedy, kv-bits, logits processors), cache coerente fermandosi a meta' verifica
-    [leak-shim] rank=? patch MTP applicata (mlx-lm 0.32.2, blocco della testa)
+    [leak-shim] rank=? patch MTP applied (mlx-lm 0.32.2, blocco della testa)
     [leak-shim] rank=? MTP attivo: /var/folders/.../tmpXXXX, 2 bozze per verifica
 PASS: leak riprodotto senza patch, assente con la patch
 PASS: desync dei rank allo stop riprodotto senza patch, assente con la patch
@@ -350,7 +350,7 @@ def _mismatch(msg):
 
 def apply_patch():
     if os.environ.get("MLX_LEAK_SHIM", "1") == "0":
-        _log("MLX_LEAK_SHIM=0: patch NON applicata")
+        _log("MLX_LEAK_SHIM=0: patch NON applied")
         return False
 
     import mlx_lm
@@ -366,7 +366,7 @@ def apply_patch():
     except (OSError, TypeError):
         src = ""
     if not all(p in src for p in EXPECTED) or not callable(getattr(BatchGenerator, "next", None)):
-        return _mismatch(f"mlx-lm {version}: codice diverso da quello atteso, patch NON applicata")
+        return _mismatch(f"mlx-lm {version}: codice diverso da quello atteso, patch NON applied")
 
     orig_advance = ArraysCache.advance
 
@@ -393,7 +393,7 @@ def apply_patch():
     next_._leak_shim = True
     ArraysCache.advance = advance
     BatchGenerator.next = next_
-    _log(f"patch applicata (mlx-lm {version})")
+    _log(f"patch applied (mlx-lm {version})")
     return True
 
 
@@ -411,7 +411,7 @@ def _patch_method(cls, name, blocks, what):
         src = ""
     if not src or any(src.count(old) != 1 for old, _ in blocks):
         return _mismatch(f"mlx-lm {version}: {name} diverso da quello atteso, "
-                         f"patch {what} NON applicata")
+                         f"patch {what} NON applied")
 
     for old, new in blocks:
         src = src.replace(old, new)
@@ -439,7 +439,7 @@ def _env_number(var, default, cast):
 
 def apply_stop_patch():
     if os.environ.get("MLX_STOP_SHIM", "1") == "0":
-        _log("MLX_STOP_SHIM=0: patch stop NON applicata")
+        _log("MLX_STOP_SHIM=0: patch stop NON applied")
         return False
 
     import mlx_lm
@@ -452,16 +452,16 @@ def apply_stop_patch():
     version = getattr(mlx_lm, "__version__", "?")
     every = _env_number("MLX_STOP_SHIM_EVERY", 8, int)
     if not callable(getattr(rg, "_share_object", None)):
-        return _mismatch(f"mlx-lm {version}: manca _share_object, patch stop NON applicata")
+        return _mismatch(f"mlx-lm {version}: manca _share_object, patch stop NON applied")
     if not _patch_method(rg, "_serve_single", [(STOP_OLD, STOP_NEW.format(every=every))], "stop"):
         return False
-    _log(f"patch stop applicata (mlx-lm {version}, sync ogni {every} token)")
+    _log(f"patch stop applied (mlx-lm {version}, sync ogni {every} token)")
     return True
 
 
 def apply_keepalive_patch():
     if os.environ.get("MLX_KEEPALIVE_SHIM", "1") == "0":
-        _log("MLX_KEEPALIVE_SHIM=0: patch keepalive NON applicata")
+        _log("MLX_KEEPALIVE_SHIM=0: patch keepalive NON applied")
         return False
 
     import mlx_lm
@@ -479,7 +479,7 @@ def apply_keepalive_patch():
         src = ""
     if "self.response_generator.generate(" not in src or "self.wfile.write(" not in src:
         return _mismatch(f"mlx-lm {version}: handle_completion diverso da quello atteso, "
-                         "patch keepalive NON applicata")
+                         "patch keepalive NON applied")
 
     orig_completion = handler.handle_completion
 
@@ -497,13 +497,13 @@ def apply_keepalive_patch():
 
     handle_completion._shim = "keepalive"
     handler.handle_completion = handle_completion
-    _log(f"patch keepalive applicata (mlx-lm {version}, dopo {every:g}s di silenzio)")
+    _log(f"patch keepalive applied (mlx-lm {version}, dopo {every:g}s di silenzio)")
     return True
 
 
 def apply_cache_bytes_patch():
     if os.environ.get("MLX_CACHE_SHIM", "1") == "0":
-        _log("MLX_CACHE_SHIM=0: patch limite cache NON applicata")
+        _log("MLX_CACHE_SHIM=0: patch limite cache NON applied")
         return False
 
     import mlx_lm
@@ -523,7 +523,7 @@ def apply_cache_bytes_patch():
     if "self._n_bytes > self.max_bytes" not in src or \
             params[:3] != ["self", "model_provider", "prompt_cache"]:
         return _mismatch(f"mlx-lm {version}: LRUPromptCache/ResponseGenerator diversi da "
-                         "quelli attesi, patch limite cache NON applicata")
+                         "quelli attesi, patch limite cache NON applied")
 
     orig_init = rg.__init__
 
@@ -538,7 +538,7 @@ def apply_cache_bytes_patch():
 
     __init__._shim = "cache-bytes"
     rg.__init__ = __init__
-    _log(f"patch limite cache applicata (mlx-lm {version})")
+    _log(f"patch limite cache applied (mlx-lm {version})")
     return True
 
 
@@ -552,7 +552,7 @@ def apply_metrics_plugin():
 
 
 def apply_pin_patch():
-    """Va applicata dopo apply_keepalive_patch, perche' avvolge handle_completion."""
+    """Va applied dopo apply_keepalive_patch, perche' avvolge handle_completion."""
     if os.environ.get("MLX_PIN_SHIM", "1") == "0":
         _log("MLX_PIN_SHIM=0: modello NON bloccato")
         return False
@@ -573,7 +573,7 @@ def apply_pin_patch():
     if 'self.requested_model = self.body.get("model"' not in src or \
             not callable(getattr(handler, "handle_models_request", None)):
         return _mismatch(f"mlx-lm {version}: APIHandler diverso da quello atteso, "
-                         "patch modello bloccato NON applicata")
+                         "patch modello bloccato NON applied")
 
     orig_completion = handler.handle_completion
     orig_models = handler.handle_models_request
@@ -607,7 +607,7 @@ def apply_pin_patch():
     handle_models_request._shim = "pin"
     handler.handle_completion = handle_completion
     handler.handle_models_request = handle_models_request
-    _log(f"patch modello bloccato applicata (mlx-lm {version})")
+    _log(f"patch modello bloccato applied (mlx-lm {version})")
     return True
 
 
@@ -639,7 +639,7 @@ def _caches_latent(model):
 
 def apply_kvbits_patch():
     if os.environ.get("MLX_KVBITS_SHIM", "1") == "0":
-        _log("MLX_KVBITS_SHIM=0: patch kv-bits NON applicata")
+        _log("MLX_KVBITS_SHIM=0: patch kv-bits NON applied")
         return False
 
     import mlx_lm
@@ -656,7 +656,7 @@ def apply_kvbits_patch():
         params, src = {}, ""
     if "kv_bits" not in params or "generate_step(prompt, model" not in src:
         return _mismatch(f"mlx-lm {version}: generate_step/stream_generate diversi da "
-                         "quelli attesi, patch kv-bits NON applicata")
+                         "quelli attesi, patch kv-bits NON applied")
 
     orig_step = generate.generate_step
 
@@ -670,7 +670,7 @@ def apply_kvbits_patch():
 
     generate_step._shim = "kvbits"
     generate.generate_step = generate_step
-    _log(f"patch kv-bits applicata (mlx-lm {version})")
+    _log(f"patch kv-bits applied (mlx-lm {version})")
     return True
 
 
@@ -1116,7 +1116,7 @@ def _mtp_generate(prompt, model, drafter, stream, *, max_tokens=256, sampler=Non
 
 
 def apply_mtp_patch():
-    """Va applicata dopo apply_kvbits_patch, perche' avvolge generate_step."""
+    """Va applied dopo apply_kvbits_patch, perche' avvolge generate_step."""
     if os.environ.get("MLX_MTP_SHIM", "1") == "0":
         _log("MLX_MTP_SHIM=0: MTP NON attivo")
         return False
@@ -1146,7 +1146,7 @@ def apply_mtp_patch():
             "gather_last_axis(out, self.sharding_group)" not in head or \
             not callable(getattr(generate, "maybe_quantize_kv_cache", None)):
         return _mismatch(f"mlx-lm {version}: generate_step/ModelProvider/qwen3_5 diversi "
-                         "da quelli attesi, patch MTP NON applicata")
+                         "da quelli attesi, patch MTP NON applied")
 
     block = None
     if os.environ.get("MLX_MTP_SHIM_BLOCK"):
@@ -1194,7 +1194,7 @@ def apply_mtp_patch():
     generate.generate_step = generate_step
     server.ModelProvider._load = _load
     LRUPromptCache.insert_cache = insert_cache
-    _log(f"patch MTP applicata (mlx-lm {version}"
+    _log(f"patch MTP applied (mlx-lm {version}"
          + (f", blocco {block})" if block else ", blocco della testa)"))
     return True
 

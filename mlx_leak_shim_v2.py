@@ -40,6 +40,13 @@ expected output:
     OK: the client sees and uses only the startup model
     [leak-shim] rank=? pinned model patch applied (mlx-lm 0.32.2)
     [leak-shim] rank=? requested model 'mlx-community/GLM-4.7-Flash-8bit': served with 'mlx-community/Qwen3.8-27B-4bit'
+--- phase penalty-unpatched ---
+    (repetition, presence, logits processors): request without penalties (0.0, 0.0, 0), with 1.1/0.0 (1.1, 0.0, 1)
+    IGNORED: the request without penalties has them off, not those of the server
+--- phase penalty-patched ---
+    [leak-shim] rank=? penalty patch applied (mlx-lm 0.32.2, server default: repetition_penalty 1, presence_penalty 1.5)
+    (repetition, presence, logits processors): request without penalties (0.0, 1.5, 1), with 1.1/0.0 (1.1, 0.0, 1)
+    OK: server penalties for the request without them, the client's values win
 --- phase kvbits-unpatched ---
     CRASH of glm4_moe_lite with --kv-bits: 'list' object has no attribute 'swapaxes'
 --- phase kvbits-patched ---
@@ -75,6 +82,7 @@ PASS: rank desync on stop reproduced without the patch, absent with the patch
 PASS: silence during tool calls reproduced without the patch, absent with the patch
 PASS: prompt cache limit overrun reproduced without the patch, absent with the patch
 PASS: model switch on client request reproduced without the patch, absent with the patch
+PASS: server penalties ignored reproduced without the patch, absent with the patch
 PASS: crash of MLA models with --kv-bits reproduced without the patch, absent with the patch
 PASS: missing /v1/metrics reproduced without the patch, absent with the patch
 PASS: startup with different configurations between the ranks reproduced without the patch, absent with the patch
@@ -207,6 +215,22 @@ batch path (BatchGenerator) does not use generate_step.
 
 ----------------
 
+Eighth patch (server penalties, mlx-lm 0.32.2): mlx_lm.server has options for
+temp, top-p, top-k and min-p, but repetition_penalty and presence_penalty
+come only from the request (do_POST: self.body.get(..., 0.0), i.e. off), so
+the server cannot apply the values recommended for a model (Qwen3.8 instruct
+mode: presence_penalty 1.5) to clients that do not send them.
+
+Fix: before do_POST validates the request, the requests that do not set the
+field get MLX_PENALTY_SHIM_REPETITION and MLX_PENALTY_SHIM_PRESENCE (set by
+start.py on all the ranks, from --reasoning); the values sent by the client
+win. repetition_penalty 1.0 leaves the logits unchanged and becomes
+0.0 (off), so that no logits processor runs for nothing (with MTP it is
+applied to every row of each verification). The request arguments are built
+on rank 0 and shared with the other ranks as before.
+
+----------------
+
 Rank check at startup: before starting the server the ranks exchange
 (all_gather) sha256 of shim and plugin, versions of mlx/mlx-lm, arguments,
 MLX_*_SHIM* variables and applied patches. If anything differs (e.g.
@@ -232,6 +256,9 @@ Environment variables:
   MLX_MTP_SHIM=0               does not use the MTP head
   MLX_MTP_SHIM_MODEL=repo|dir  MTP head to use instead of the one derived from --model
   MLX_MTP_SHIM_BLOCK=n         tokens per verification, last + n-1 drafts (default: block_size of the head, 3)
+  MLX_PENALTY_SHIM_REPETITION=x  repetition_penalty of the requests that do not set it (default: off)
+  MLX_PENALTY_SHIM_PRESENCE=x  presence_penalty of the requests that do not set it (default: off)
+  MLX_PENALTY_SHIM=0           ignores the two variables above (back to the original behavior)
   MLX_LEAK_SHIM_STRICT=1       exits with an error if the installed code is not the expected one
 """
 
@@ -254,7 +281,8 @@ TAG = "[leak-shim]"
 SHIM_ENV = ("MLX_LEAK_SHIM", "MLX_LEAK_SHIM_STRICT", "MLX_STOP_SHIM", "MLX_STOP_SHIM_EVERY",
             "MLX_KEEPALIVE_SHIM", "MLX_KEEPALIVE_SHIM_EVERY", "MLX_CACHE_SHIM", "MLX_PIN_SHIM",
             "MLX_KVBITS_SHIM", "MLX_METRICS_PLUGIN", "MLX_MTP_SHIM", "MLX_MTP_SHIM_MODEL",
-            "MLX_MTP_SHIM_BLOCK")
+            "MLX_MTP_SHIM_BLOCK", "MLX_PENALTY_SHIM", "MLX_PENALTY_SHIM_REPETITION",
+            "MLX_PENALTY_SHIM_PRESENCE")
 EXPECTED = ("self.lengths -= N", "self.left_padding -= N")
 
 # Block of ResponseGenerator._serve_single replaced by the stop patch
@@ -613,6 +641,67 @@ def apply_pin_patch():
     handler.handle_completion = handle_completion
     handler.handle_models_request = handle_models_request
     _log(f"pinned model patch applied (mlx-lm {version})")
+    return True
+
+
+# Variables with the server default of the penalties that mlx_lm.server
+# reads only from the request, with this line of do_POST
+PENALTY_ENV = {"MLX_PENALTY_SHIM_REPETITION": "repetition_penalty",
+               "MLX_PENALTY_SHIM_PRESENCE": "presence_penalty"}
+PENALTY_GET = 'self.{0} = self.body.get("{0}", 0.0)'
+
+
+def apply_penalty_patch():
+    """Server default of the penalties for the requests that do not set them."""
+    if os.environ.get("MLX_PENALTY_SHIM", "1") == "0":
+        _log("MLX_PENALTY_SHIM=0: penalty patch NOT applied")
+        return False
+
+    defaults = {}
+    for var, field in PENALTY_ENV.items():
+        value = os.environ.get(var)
+        if value:
+            try:
+                defaults[field] = float(value)
+            except ValueError:
+                _log(f"{var}={value!r} not a number: {field} off")
+
+    import mlx_lm
+    from mlx_lm import server
+
+    handler = server.APIHandler
+    if getattr(handler.validate_model_parameters, "_shim", None) == "penalty":
+        return True
+
+    version = getattr(mlx_lm, "__version__", "?")
+    try:
+        src = inspect.getsource(handler.do_POST)
+    except (OSError, TypeError):
+        src = ""
+    validate = src.find("self.validate_model_parameters()")
+    if validate < 0 or not all(0 <= src.find(PENALTY_GET.format(field)) < validate
+                               for field in PENALTY_ENV.values()):
+        return _mismatch(f"mlx-lm {version}: APIHandler.do_POST differs from the expected one, "
+                         "penalty patch NOT applied")
+
+    orig_validate = handler.validate_model_parameters
+
+    @functools.wraps(orig_validate)
+    def validate_model_parameters(self):
+        # do_POST has read the penalties (0.0 when missing) and validates them now
+        for field, value in defaults.items():
+            if field not in self.body:
+                setattr(self, field, value)
+        # 1.0 leaves the logits unchanged: off, as 0.0, so no logits processor
+        if self.repetition_penalty == 1:
+            self.repetition_penalty = 0.0
+        return orig_validate(self)
+
+    validate_model_parameters._shim = "penalty"
+    handler.validate_model_parameters = validate_model_parameters
+    _log(f"penalty patch applied (mlx-lm {version}, server default: "
+         + (", ".join(f"{field} {value:g}" for field, value in defaults.items()) or "none")
+         + ")")
     return True
 
 
@@ -1529,6 +1618,52 @@ def _pin_phase(patched):
     return 0
 
 
+def _penalty_phase(patched):
+    """Real do_POST on a handler without socket, server started as by
+    start.py --reasoning off: a request without penalties must get those of
+    the server, with repetition 1.0 off (no logits processor), and one with
+    its own penalties must keep them."""
+    import io
+    from types import SimpleNamespace as NS
+    from mlx_lm import server
+    from mlx_lm.sample_utils import make_logits_processors
+
+    seen = []
+    server.APIHandler.handle_completion = lambda self, request, stop_words: seen.append(
+        (self.repetition_penalty, self.presence_penalty, len(make_logits_processors(
+            None, self.repetition_penalty, 20, self.presence_penalty, 20))))
+
+    os.environ.update(MLX_PENALTY_SHIM_REPETITION="1.0", MLX_PENALTY_SHIM_PRESENCE="1.5")
+    if patched and not apply_penalty_patch():
+        print("patch not applicable")
+        return 1
+
+    def post(body):
+        raw = json.dumps(dict(prompt="hello", **body)).encode()
+        h = object.__new__(server.APIHandler)
+        h.path, h.headers, h.rfile = "/v1/completions", {"Content-Length": str(len(raw))}, \
+            io.BytesIO(raw)
+        h.wfile = io.BytesIO()
+        h.response_generator = NS(cli_args=NS(num_draft_tokens=3, max_tokens=16, temp=0.7,
+                                              top_p=0.8, top_k=20, min_p=0.0))
+        h._set_completion_headers = h.end_headers = lambda *a: None
+        server.APIHandler.do_POST(h)
+        return seen.pop() if seen else h.wfile.getvalue()
+
+    plain = post({})
+    own = post({"repetition_penalty": 1.1, "presence_penalty": 0.0})
+    print(f"(repetition, presence, logits processors): request without penalties {plain}, "
+          f"with 1.1/0.0 {own}")
+    if plain == (0.0, 0.0, 0):
+        print("IGNORED: the request without penalties has them off, not those of the server")
+        return 3
+    if plain != (0.0, 1.5, 1) or own != (1.1, 0.0, 1):
+        print("WRONG: expected (0.0, 1.5, 1) and (1.1, 0.0, 1)")
+        return 1
+    print("OK: server penalties for the request without them, the client's values win")
+    return 0
+
+
 KV_PROMPT = 12  # prompt tokens of the test
 KV_START = 8    # --quantized-kv-start of the test (5000 in production)
 
@@ -1848,7 +1983,7 @@ def _self_test():
     for phase in ("unpatched", "patched", "stop-unpatched", "stop-patched",
                   "keepalive-unpatched", "keepalive-patched",
                   "cache-unpatched", "cache-patched", "pin-unpatched", "pin-patched",
-                  "kvbits-unpatched", "kvbits-patched",
+                  "penalty-unpatched", "penalty-patched", "kvbits-unpatched", "kvbits-patched",
                   "metrics-unpatched", "metrics-patched",
                   "ranks-unpatched", "ranks-patched", "mtp-unpatched", "mtp-patched"):
         print(f"--- phase {phase} ---", flush=True)
@@ -1869,6 +2004,7 @@ def _self_test():
                        ("keepalive-", "silence during tool calls"),
                        ("cache-", "prompt cache limit overrun"),
                        ("pin-", "model switch on client request"),
+                       ("penalty-", "server penalties ignored"),
                        ("kvbits-", "crash of MLA models with --kv-bits"),
                        ("metrics-", "missing /v1/metrics"),
                        ("ranks-", "startup with different configurations between the ranks"),
@@ -1888,6 +2024,7 @@ def _self_test():
 PHASES = ("patched", "unpatched", "stop-patched", "stop-unpatched",
           "keepalive-patched", "keepalive-unpatched",
           "cache-patched", "cache-unpatched", "pin-patched", "pin-unpatched",
+          "penalty-patched", "penalty-unpatched",
           "kvbits-patched", "kvbits-unpatched", "metrics-patched", "metrics-unpatched",
           "ranks-patched", "ranks-unpatched", "mtp-patched", "mtp-unpatched")
 
@@ -1908,6 +2045,8 @@ def main():
             return _cache_phase(args[1] == "cache-patched")
         if args[1].startswith("pin-"):
             return _pin_phase(args[1] == "pin-patched")
+        if args[1].startswith("penalty-"):
+            return _penalty_phase(args[1] == "penalty-patched")
         if args[1].startswith("kvbits-"):
             return _kvbits_phase(args[1] == "kvbits-patched")
         if args[1].startswith("metrics-"):
@@ -1926,6 +2065,7 @@ def main():
         "keepalive": apply_keepalive_patch(),
         "cache": apply_cache_bytes_patch(),
         "pin": apply_pin_patch(),
+        "penalty": apply_penalty_patch(),
         "kvbits": apply_kvbits_patch(),
         "mtp": apply_mtp_patch(),
         "metrics": apply_metrics_plugin(),

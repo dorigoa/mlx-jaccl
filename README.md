@@ -178,8 +178,8 @@ cd mlx-jaccl
 | File | Purpose |
 | --- | --- |
 | `start.py` | Builds and runs the `mlx.launch` command (JACCL backend, hostfile, shim, model options), prints the speed of each finished request, and when it is stopped stops the ranks on all the hosts |
-| `mlx_leak_shim_v2.py` | Default shim of `start.py`: starts `mlx_lm.server` with in-memory patches (Metal buffer leak, distributed stop, SSE keepalive during tool calls, byte limit of the prompt cache, model pinned to `--model`, `--kv-bits` on MLA models, rank configuration check at startup, MTP) |
-| `mlx_leak_shim.py` | Previous shim, without rank check and MTP: to go back, `-leak-patch ~/mlx-jaccl/mlx_leak_shim.py` |
+| `mlx_leak_shim_v2.py` | Default shim of `start.py`: starts `mlx_lm.server` with in-memory patches (Metal buffer leak, distributed stop, SSE keepalive during tool calls, byte limit of the prompt cache, model pinned to `--model`, server default of repetition and presence penalty, `--kv-bits` on MLA models, rank configuration check at startup, MTP) |
+| `mlx_leak_shim.py` | Previous shim, without rank check, MTP and server penalties: to go back, `-leak-patch ~/mlx-jaccl/mlx_leak_shim.py` |
 | `mlx_launch_shim.py` | Runs `mlx.launch` for `start.py` without its busy loop (in-memory patch: ~0% CPU on Mac1 instead of ~130%) |
 | `mlx_metrics_plugin.py` | `GET /v1/metrics`, loaded by both shims |
 | `hosts.json` | `mlx.launch` hostfile |
@@ -196,8 +196,9 @@ Launch from Mac1 (rank 0). `start.py` passes absolute paths (by default `hosts.j
 
 ```
 ./start.py -8bit -host 0.0.0.0
-Server start: model=mlx-community/Qwen3.8-27B-8bit, port=8080, thinking=true
+Server start: model=mlx-community/Qwen3.8-27B-8bit, port=8080, reasoning=on (temp 1.0, top-p 0.95, top-k 20, min-p 0.0, presence-penalty 0.0, repetition-penalty 1.0)
 [INFO] Running /Volumes/Home/Alvise/miniforge3/envs/mlx/bin/python -X mlx_jaccl_tag=5675b25b35b6 /Volumes/Home/Alvise/mlx-jaccl/mlx_leak_shim_v2.py --model mlx-community/Qwen3.8-27B-8bit --host 0.0.0.0 --port 8080 --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 --max-tokens 262144 --log-level INFO --prompt-cache-bytes 0G --prefill-step-size 256 --chat-template-args '{"enable_thinking": true, "reasoning_effort": "medium"}' --kv-bits 8
+[leak-shim] rank=0 penalty patch applied (mlx-lm 0.32.2, server default: repetition_penalty 1, presence_penalty 0)
 [leak-shim] rank=0 MTP patch applied (mlx-lm 0.32.2, block size of the head)
 [leak-shim] rank=0 identical configuration on 2 ranks
 [leak-shim] rank=0 MTP active: mlx-community/Qwen3.8-27B-MTP-8bit, 2 drafts per verification
@@ -206,7 +207,16 @@ Server start: model=mlx-community/Qwen3.8-27B-8bit, port=8080, thinking=true
 [tps] 17:07:23 last request: 34.6 tok/s (1109 tokens in 32.0s, stop), prefill 285.4 tok/s (153 tokens), average since start 34.6 tok/s
 ```
 
-`./start.py -h` lists all the options. The `[tps]` line comes from `start.py` itself, which reads `/v1/metrics` on this machine every 3 seconds (`-tps-every SECONDS`, 0 switches it off) and prints the last finished request; requests finished within the same interval show only the last one (`N more not shown`), the average includes all of them.
+`./start.py -h` lists all the options. `--reasoning on` (the default) or `--reasoning off` switches thinking on or off and sets the sampling that [Unsloth recommends for Qwen3.8-27B](https://unsloth.ai/docs/models/qwen3.8) in that mode:
+
+| `--reasoning` | temp | top-p | top-k | min-p | presence penalty | repetition penalty |
+| --- | --- | --- | --- | --- | --- | --- |
+| `on` (thinking mode) | 1.0 | 0.95 | 20 | 0.0 | 0.0 | 1.0 |
+| `off` (instruct mode) | 0.7 | 0.80 | 20 | 0.0 | 1.5 | 1.0 |
+
+These are the server defaults: a client that sends its own `temperature`, `top_p`, `presence_penalty`, … in the request overrides them for that request. `mlx_lm.server` has options for temp, top-p, top-k and min-p but not for the two penalties, which it takes only from the request (missing: off); `start.py` passes them to both ranks as `MLX_PENALTY_SHIM_PRESENCE` and `MLX_PENALTY_SHIM_REPETITION`, and the shim gives them to the requests that don't set them. A repetition penalty of 1.0 changes nothing, so the shim leaves it off (no work per token). In mlx-lm both penalties look only at the last 20 tokens (prompt included), unless the request sets `presence_context_size` / `repetition_context_size`. With `--reasoning on`, `-xhigh` raises the reasoning effort from `medium` to `xhigh`.
+
+The `[tps]` line comes from `start.py` itself, which reads `/v1/metrics` on this machine every 3 seconds (`-tps-every SECONDS`, 0 switches it off) and prints the last finished request; requests finished within the same interval show only the last one (`N more not shown`), the average includes all of them.
 
 Stopping: `start.py` stays alive as long as the server (its pid is the one to save, e.g. `nohup ./start.py … & echo $! > mlx-jaccl.pid`) and stops the whole cluster when it gets Ctrl-C, `kill`, or the closing of its terminal (unless started with `nohup`):
 

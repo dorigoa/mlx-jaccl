@@ -28,6 +28,18 @@ TAG_OPTION = "mlx_jaccl_tag"
 RANK_PATTERN = "[m]lx_leak_shim[^ /]*[.]py --model "
 # Runs mlx.launch without the busy loop that keeps Mac1 at ~130% CPU
 LAUNCH_SHIM = SCRIPT_DIR / "mlx_launch_shim.py"
+# Sampling recommended for Qwen3.8-27B with thinking on (thinking mode) and off
+# (instruct mode): https://unsloth.ai/docs/models/qwen3.8
+SAMPLING = {
+    "on": {"temp": "1.0", "top-p": "0.95", "top-k": "20", "min-p": "0.0",
+           "presence-penalty": "0.0", "repetition-penalty": "1.0"},
+    "off": {"temp": "0.7", "top-p": "0.80", "top-k": "20", "min-p": "0.0",
+            "presence-penalty": "1.5", "repetition-penalty": "1.0"},
+}
+# mlx_lm.server has no options for the penalties: the shim reads them from
+# these variables and gives them to the requests that don't set them
+PENALTY_ENV = {"presence-penalty": "MLX_PENALTY_SHIM_PRESENCE",
+               "repetition-penalty": "MLX_PENALTY_SHIM_REPETITION"}
 
 
 def die(msg):
@@ -42,14 +54,6 @@ def port(value):
     if not re.fullmatch(r"\d{1,5}", value) or not 1 <= int(value) <= 65535:
         raise argparse.ArgumentTypeError("requires an integer in the range 1-65535")
     return int(value)
-
-
-def number(value):
-    try:
-        float(value)
-    except ValueError:
-        raise argparse.ArgumentTypeError(f"not a number: {value!r}") from None
-    return value
 
 
 def gbytes(value):
@@ -74,8 +78,10 @@ def parse_args(argv):
     #parser.add_argument("model", choices=MODELS, help="model to serve")
     parser.add_argument("-8bit", dest="eight_bit", action="store_true",
                         help="use 8bit quantization (default: 4bit)")
-    parser.add_argument("-nothink", action="store_true",
-                        help="disable thinking (default: enabled)")
+    parser.add_argument("-reasoning", "--reasoning", choices=SAMPLING, default="on",
+                        help="thinking on or off, each with the sampling recommended for "
+                             "Qwen3.8: temp, top-p, top-k, min-p, presence and repetition "
+                             "penalty (default: %(default)s)")
     parser.add_argument("-xhigh", action="store_true",
                         help="high reasoning effort (default: medium)")
     parser.add_argument("-port", type=port, default=8080,
@@ -88,10 +94,6 @@ def parse_args(argv):
                         help="hostfile of the mlx cluster (default: %(default)s)")
     parser.add_argument("-leak-patch", default=str(SCRIPT_DIR / "mlx_leak_shim_v2.py"),
                         help="shim with the mlx-lm patches (default: %(default)s)")
-    parser.add_argument("-temp", type=number, default="1.0",
-                        help="sampling temperature (default: %(default)s)")
-    parser.add_argument("-top-p", type=number, default="0.95",
-                        help="sampling top-p (default: %(default)s)")
     parser.add_argument("-cache-gbytes", type=gbytes,
                         help="prompt cache size in GB (default: 0 for Qwen, 4.5 otherwise)")
     parser.add_argument("-tps-every", type=seconds, default=3.0,
@@ -115,14 +117,19 @@ def build_command(args, tag):
         # Qwen3.x are hybrid: with --kv-bits the prompt cache never does hit
         cache = "0" #if args.model.startswith("Qwen") else "4.5"
     chat_template_args = json.dumps({
-        "enable_thinking": not args.nothink,
+        "enable_thinking": args.reasoning == "on",
         "reasoning_effort": "xhigh" if args.xhigh else "medium",
     })
+    sampling = SAMPLING[args.reasoning]
+    options = [arg for name, value in sampling.items() if name not in PENALTY_ENV
+               for arg in (f"--{name}", value)]
+    penalties = [arg for name, var in PENALTY_ENV.items()
+                 for arg in ("--env", f"{var}={sampling[name]}")]
     server_args = [
         args.leak_patch,
         "--model", model_id(args),
         "--host", str(args.host), "--port", str(args.port),
-        "--temp", args.temp, "--top-p", args.top_p, "--top-k", "20", "--min-p", "0.0",
+        *options,
         "--max-tokens", str(args.max_tokens),
         "--log-level", "DEBUG" if args.debug else "INFO",
         "--prompt-cache-bytes", f"{cache}G",
@@ -136,7 +143,7 @@ def build_command(args, tag):
         str(MLX_LAUNCH), "--verbose", "--backend", "jaccl", "--hostfile", args.hostfile,
         "--env", "MLX_METAL_FAST_SYNCH=0", "--env", "HF_HUB_OFFLINE=0",
         "--env", f"MLX_LEAK_SHIM={os.environ.get('MLX_LEAK_SHIM') or '1'}",
-        "--env", "MLX_LEAK_SHIM_STRICT=1",
+        "--env", "MLX_LEAK_SHIM_STRICT=1", *penalties,
         "--", str(PYTHON_BIN), "-X", f"{TAG_OPTION}={tag}", *server_args,
     ]
 
@@ -321,9 +328,9 @@ def main(argv=None):
         die("mlx_lm.server is already running, or left over by a launch that wasn't "
             f"stopped properly (it keeps the RDMA devices busy). Stop it with:\n  {stop}")
 
-    thinking = "false" if args.nothink else "true"
-    print(f"Server start: model={model_id(args)}, port={args.port}, thinking={thinking}",
-          file=sys.stderr)
+    sampling = ", ".join(f"{name} {value}" for name, value in SAMPLING[args.reasoning].items())
+    print(f"Server start: model={model_id(args)}, port={args.port}, "
+          f"reasoning={args.reasoning} ({sampling})", file=sys.stderr)
     env = dict(os.environ, PATH=f"{ENV_BIN}{os.pathsep}{os.environ.get('PATH', '')}")
     received = []
     launch = None
